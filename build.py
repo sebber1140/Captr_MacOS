@@ -2,16 +2,77 @@ import shutil
 import sys
 from pathlib import Path
 from platform import system
-from subprocess import CalledProcessError, run
+from subprocess import CalledProcessError, run, PIPE
 import time # Import time for sleep
 import os # Import os for path operations
 
 project_dir = Path(".")
 assets_dir = project_dir / "assets"
 main_py = project_dir / "main.py"
+spec_file = project_dir / "DuckTrack.spec"
 # Use .png for icon, PyInstaller handles conversion if needed for Windows
 icon_file = assets_dir / "duck.png"
 app_name = "DuckTrack"
+# Virtual environment path
+venv_path = project_dir / "venv"
+venv_bin = venv_path / "bin"
+
+def ensure_venv_activated():
+    """Ensure we're running in the virtual environment"""
+    if not os.environ.get("VIRTUAL_ENV") or not os.environ.get("VIRTUAL_ENV").endswith("venv"):
+        print("Activating virtual environment...")
+        # We can't actually activate the venv from Python, but we can use the venv's Python
+        venv_python = venv_bin / "python3"
+        if venv_python.exists():
+            # Re-execute this script using the venv's Python
+            cmd = [str(venv_python), __file__]
+            print(f"Re-executing with {venv_python}: {' '.join(cmd)}")
+            os.execv(str(venv_python), cmd)
+        else:
+            print(f"Error: Virtual environment Python not found at {venv_python}")
+            sys.exit(1)
+    else:
+        print(f"Using virtual environment: {os.environ.get('VIRTUAL_ENV')}")
+
+def test_pyobjc_imports():
+    """Test PyObjC imports to verify they work correctly."""
+    print("\nTesting PyObjC imports...")
+    test_script = """
+import sys
+try:
+    import objc
+    from Quartz import CoreGraphics
+    import AppKit
+    import Foundation
+    import ApplicationServices
+    
+    # Try to access the problematic constants
+    print(f"kAXValueCGPointType = {CoreGraphics.kAXValueCGPointType}")
+    print(f"All PyObjC imports succeeded!")
+    sys.exit(0)
+except Exception as e:
+    print(f"PyObjC import test failed: {e}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
+"""
+    with open("test_pyobjc.py", "w") as f:
+        f.write(test_script)
+    
+    try:
+        result = run([sys.executable, "test_pyobjc.py"], 
+                    check=True, capture_output=True, text=True)
+        print("PyObjC import test succeeded:")
+        print(result.stdout)
+        return True
+    except CalledProcessError as e:
+        print("PyObjC import test FAILED:")
+        print(e.stdout)
+        print(e.stderr)
+        return False
+    finally:
+        if Path("test_pyobjc.py").exists():
+            Path("test_pyobjc.py").unlink()
 
 def create_dmg(dist_path: Path, app_name: str):
     """Creates a DMG file for the macOS application bundle."""
@@ -67,29 +128,42 @@ for dir_to_remove in ["dist", "build"]:
     if dir_path.exists():
         shutil.rmtree(dir_path)
 
-# Build the base PyInstaller command
-pyinstaller_cmd = [
-    "pyinstaller",
-    "--windowed", # Create a GUI app (no console)
-    # "--onefile", # Changed to --onedir (default) for better compatibility
-    f"--add-data={assets_dir}:assets", # Bundle assets dir into 'assets' in bundle
-    f"--name=DuckTrack",
-    f"--icon={icon_file}",
-]
+# Make sure we're running in the virtual environment
+ensure_venv_activated()
 
-# Add macOS specific options
+# Test PyObjC imports first on macOS
 if system() == "Darwin":
-    pyinstaller_cmd.extend([
-        "--osx-bundle-identifier=com.duckai.ducktrack"
-    ])
+    if not test_pyobjc_imports():
+        print("PyObjC import test failed. Fix import issues before building.")
+        response = input("Continue anyway? (y/n): ")
+        if response.lower() != 'y':
+            sys.exit(1)
 
-# Add the main script
-pyinstaller_cmd.append(str(main_py))
+# First, check if pyinstaller is available
+try:
+    # Try importing PyInstaller to verify it's installed
+    import PyInstaller
+    print(f"PyInstaller version {PyInstaller.__version__} found.")
+    pyinstaller_cmd = [sys.executable, "-m", "PyInstaller"]
+except ImportError:
+    print("PyInstaller not found in current environment. Trying python -m PyInstaller instead.")
+    pyinstaller_cmd = [sys.executable, "-m", "PyInstaller"]
+
+# Add the spec file
+pyinstaller_cmd.append(str(spec_file))
 
 print(f"Running PyInstaller command: {' '.join(pyinstaller_cmd)}")
 
 try:
-    run(pyinstaller_cmd, check=True)
+    # Run with detailed output for debugging
+    process = run(pyinstaller_cmd, check=True, stdout=PIPE, stderr=PIPE, text=True)
+    print("PyInstaller stdout:")
+    print(process.stdout)
+    
+    if process.stderr:
+        print("PyInstaller stderr (warnings/info):")
+        print(process.stderr)
+    
     print("Build successful! Application bundle created in 'dist' directory.")
 
     # Create DMG only on macOS
@@ -102,8 +176,15 @@ try:
             print(f"DMG file created at: {dist_path / f'{app_name}.dmg'}")
 
 except CalledProcessError as e:
-    print(f"An error occurred while running PyInstaller: {e}")
+    print(f"An error occurred while running PyInstaller:")
+    print(f"Command exit code: {e.returncode}")
+    print(f"stdout: {e.stdout}")
+    print(f"stderr: {e.stderr}")
     sys.exit(1)
 except FileNotFoundError:
-    print("Error: 'pyinstaller' command not found. Make sure PyInstaller is installed and in your PATH.")
+    print("Error: Could not run PyInstaller. Make sure it's installed in your environment.")
+    print("Try running: pip install pyinstaller")
+    sys.exit(1)
+except Exception as e:
+    print(f"Unexpected error during build: {e}")
     sys.exit(1)

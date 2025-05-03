@@ -280,10 +280,12 @@ class MainInterface(QWidget):
                 try:
                     workspace = NSWorkspace.sharedWorkspace()
                     active_app = workspace.frontmostApplication()
+                    pid = None # Initialize pid
                     if active_app:
+                        pid = active_app.processIdentifier() # Get PID
                         bundle_id = active_app.bundleIdentifier()
                         loc_name = active_app.localizedName()
-                        app_name = bundle_id or loc_name or "Unknown"
+                        app_name = bundle_id if bundle_id else loc_name if loc_name else "Unknown"
                         window_title = "" # Keep blank for now
                     else:
                         app_name = "Unknown"
@@ -306,6 +308,7 @@ class MainInterface(QWidget):
                 event_data = {
                     "window_title": window_title,
                     "app_name": app_name,
+                    "pid": pid, # Add pid to event data
                     "x": mouse_x,
                     "y": mouse_y
                 }

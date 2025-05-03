@@ -8,3 +8,5 @@ wmi
 psutil
 pyinstaller
 pynput
+pyobjc-framework-Cocoa
+pychrome
