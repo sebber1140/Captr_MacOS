@@ -11,6 +11,7 @@ import pychrome
 from pychrome.exceptions import TimeoutException
 import requests.exceptions
 import websocket # For websocket specific exceptions
+import socket # For port scanning
 
 from pynput import keyboard, mouse
 from pynput.keyboard import KeyCode
@@ -263,104 +264,19 @@ else:
         logging.debug("capture_macos_accessibility_tree called but not on macOS or PyObjC failed")
         return None
 
-# --- Helper function for CDP DOM Snapshot ---
-def capture_chromium_dom_snapshot(port=9222):
-    """Connects to Chrome via CDP and captures DOM snapshot of the active tab."""
-    try:
-        logging.debug(f"Attempting to connect to Chromium on port {port}...")
-        
-        # First, check if Chrome is available with the debugging port
-        try:
-            import requests
-            version_response = requests.get(f"http://127.0.0.1:{port}/json/version", timeout=2)
-            if version_response.status_code != 200:
-                logging.warning(f"Chrome debugging port returned status code {version_response.status_code}")
-                return None
-                
-            # Get the list of tabs
-            tabs_response = requests.get(f"http://127.0.0.1:{port}/json/list", timeout=2)
-            if tabs_response.status_code != 200:
-                logging.warning("Failed to get list of tabs")
-                return None
-                
-            tabs = tabs_response.json()
-            if not tabs:
-                logging.warning("No tabs found in Chrome/Edge")
-                return None
-                
-            # Find the first real page tab (not DevTools, extensions, etc.)
-            active_tab = None
-            for tab in tabs:
-                if tab.get('type') == 'page' and tab.get('url') and not tab.get('url').startswith('chrome'):
-                    active_tab = tab
-                    break
-                    
-            # If no suitable tab found, try the first tab of any type as fallback
-            if not active_tab and tabs:
-                active_tab = tabs[0]
-                
-            if not active_tab:
-                logging.warning("Could not find an active tab")
-                return None
-                
-            logging.debug(f"Found active tab: {active_tab.get('title')} - {active_tab.get('url')}")
-            
-            # Now use pychrome to connect to this tab
-            import pychrome
-            browser = pychrome.Browser(url=f"http://127.0.0.1:{port}")
-            
-            # Get the tab by ID
-            tab_id = active_tab.get('id')
-            if not tab_id:
-                logging.warning("Tab is missing ID")
-                return None
-                
-            # Use the browser.list_tab() to get the actual tab object
-            browser_tabs = browser.list_tab()
-            target_tab = None
-            
-            for bt in browser_tabs:
-                if hasattr(bt, 'id') and bt.id == tab_id:
-                    target_tab = bt
-                    break
-                    
-            if not target_tab:
-                logging.warning(f"Could not find tab with ID {tab_id} in browser tabs")
-                return None
-                
-            # Start the tab
-            target_tab.start()
-            
-            try:
-                # Call Page.captureSnapshot - returns MHTML data
-                logging.debug("Calling Page.captureSnapshot...")
-                snapshot_data = target_tab.call_method("Page.captureSnapshot", format='mhtml', _timeout=5)
-                
-                if snapshot_data and 'data' in snapshot_data:
-                    logging.debug(f"Captured DOM snapshot: {len(snapshot_data['data'])} bytes")
-                    return snapshot_data.get('data')
-                else:
-                    logging.warning("CDP: captureSnapshot returned empty or invalid data")
-                    return None
-            finally:
-                target_tab.stop()
-                
-        except (requests.exceptions.ConnectionError, pychrome.exceptions.TimeoutException, websocket.WebSocketException) as e:
-            logging.warning(f"CDP connection/capture failed (port {port}): {e}")
-            return None
-            
-    except Exception as e:
-        logging.error(f"Unexpected error during CDP capture: {e}", exc_info=True)
-        return None
-
 # --- Constants ---
+# Common Chrome debugging ports
+CHROMIUM_DEBUG_PORTS = [9222, 9223, 9224, 9333, 8080]
+
 CHROMIUM_BUNDLE_IDS = {
     "com.google.Chrome",
     "com.microsoft.Edge",
     "com.brave.Browser",
-    # Add others like Opera, Vivaldi if needed
-    # "com.operasoftware.Opera",
-    # "com.vivaldi.Vivaldi"
+    "com.operasoftware.Opera",
+    "com.vivaldi.Vivaldi",
+    "org.chromium.Chromium",
+    "com.google.Chrome.canary"
+    # Add others as needed
 }
 
 # Keys that should trigger DOM capture (besides clicks and modifier changes)
@@ -1050,3 +966,120 @@ class Recorder(QThread):
                                   "action": "release", 
                                   "name": key.char if type(key) == KeyCode else key.name}, block=False)
     # --- End pynput Callbacks ---
+
+# --- Helper function for CDP DOM Snapshot ---
+def capture_chromium_dom_snapshot(primary_port=9222):
+    """
+    Connects to any available Chromium browser and captures DOM snapshot of the active tab.
+    
+    Args:
+        primary_port: The primary port to try first (default: 9222)
+        
+    Returns:
+        MHTML data as string or None if failed
+    """
+    # First try the primary port, then check others
+    ports_to_try = [primary_port] + [p for p in CHROMIUM_DEBUG_PORTS if p != primary_port]
+    
+    for port in ports_to_try:
+        try:
+            # Check if port is open to avoid timeout delay
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(0.5)
+                result = sock.connect_ex(('127.0.0.1', port))
+                if result != 0:
+                    # Port is not open, skip to next port
+                    logging.debug(f"Port {port} is not open, skipping...")
+                    continue
+            
+            logging.debug(f"Attempting to connect to Chromium on port {port}...")
+            
+            # Check Chrome availability with the debugging port
+            try:
+                version_response = requests.get(f"http://127.0.0.1:{port}/json/version", timeout=2)
+                if version_response.status_code != 200:
+                    logging.debug(f"Chrome debugging port {port} returned status code {version_response.status_code}")
+                    continue
+                
+                browser_info = version_response.json()
+                browser_name = browser_info.get('Browser', 'Unknown browser')
+                logging.debug(f"Found browser: {browser_name} on port {port}")
+                    
+                # Get the list of tabs
+                tabs_response = requests.get(f"http://127.0.0.1:{port}/json/list", timeout=2)
+                if tabs_response.status_code != 200:
+                    logging.debug(f"Failed to get list of tabs on port {port}")
+                    continue
+                    
+                tabs = tabs_response.json()
+                if not tabs:
+                    logging.debug(f"No tabs found in browser on port {port}")
+                    continue
+                    
+                # Find the first real page tab (not DevTools, extensions, etc.)
+                active_tab = None
+                for tab in tabs:
+                    if tab.get('type') == 'page' and tab.get('url') and not tab.get('url').startswith('chrome'):
+                        active_tab = tab
+                        break
+                        
+                # If no suitable tab found, try the first tab of any type as fallback
+                if not active_tab and tabs:
+                    active_tab = tabs[0]
+                    
+                if not active_tab:
+                    logging.debug(f"Could not find an active tab on port {port}")
+                    continue
+                    
+                logging.debug(f"Found active tab: {active_tab.get('title')} - {active_tab.get('url')}")
+                
+                # Now use pychrome to connect to this tab
+                browser = pychrome.Browser(url=f"http://127.0.0.1:{port}")
+                
+                # Get the tab by ID
+                tab_id = active_tab.get('id')
+                if not tab_id:
+                    logging.debug(f"Tab is missing ID on port {port}")
+                    continue
+                    
+                # Use the browser.list_tab() to get the actual tab object
+                browser_tabs = browser.list_tab()
+                target_tab = None
+                
+                for bt in browser_tabs:
+                    if hasattr(bt, 'id') and bt.id == tab_id:
+                        target_tab = bt
+                        break
+                        
+                if not target_tab:
+                    logging.debug(f"Could not find tab with ID {tab_id} in browser tabs on port {port}")
+                    continue
+                    
+                # Start the tab
+                target_tab.start()
+                
+                try:
+                    # Call Page.captureSnapshot - returns MHTML data
+                    logging.debug(f"Calling Page.captureSnapshot on port {port}...")
+                    snapshot_data = target_tab.call_method("Page.captureSnapshot", format='mhtml', _timeout=5)
+                    
+                    if snapshot_data and 'data' in snapshot_data:
+                        logging.info(f"Successfully captured DOM snapshot from {browser_name} on port {port} ({len(snapshot_data['data'])} bytes)")
+                        return snapshot_data.get('data')
+                    else:
+                        logging.debug(f"CDP: captureSnapshot returned empty or invalid data on port {port}")
+                        continue
+                finally:
+                    target_tab.stop()
+                    
+            except (requests.exceptions.ConnectionError, pychrome.exceptions.TimeoutException, websocket.WebSocketException) as e:
+                logging.debug(f"CDP connection/capture failed on port {port}: {e}")
+                continue
+                
+        except Exception as e:
+            logging.debug(f"Unexpected error during CDP capture on port {port}: {e}")
+            continue
+    
+    # If we get here, all ports failed
+    logging.warning("Failed to capture DOM from any Chromium browser")
+    return None
