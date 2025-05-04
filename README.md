@@ -69,6 +69,23 @@ You will interact with the app through an app tray icon (menu bar on macOS, syst
 
 From the app tray or GUI, you can start and stop a recording as well as pause and resume a recording. Pausing and resuming is important for when you want to hide sensitive information like credit card or login credentials. You can optionally name your recording and give it a description upon stopping a recording. You can also view your recordings by pressing the "Show Recordings" option.
 
+### Browser Launcher
+
+The app includes a browser launcher feature designed to capture DOM snapshots while recording. When you click "Launch Browser for DOM Capture" from the main interface or tray menu, you can:
+
+1. Select from any installed Chromium-based browser (Chrome, Edge, Brave, etc.)
+2. Automatically configure the browser with debugging enabled
+3. Start using the browser normally - no technical setup required!
+
+When you record while using a launched browser, DuckTrack will capture DOM snapshots in the `dom_snaps` folder of your recording whenever you:
+- Click on an element
+- Press navigation keys (enter, tab, arrow keys, etc.)
+- Press modifier keys (shift, ctrl, alt, command, etc.)
+
+These DOM snapshots provide valuable context about the browser's structure during your interactions, which is useful for training and evaluating computer-use models.
+
+> **Note:** DOM snapshots are only captured from browsers launched through DuckTrack's Browser Launcher, not from browsers started normally.
+
 ### Playback
 
 You can playback a recording, i.e. simulate the series of events from the recording, by pressing "Play Latest Recording", which plays the latest created recording, or by pressing "Play Custom Recording", which lets you choose a recording to play. You can easily replay the most recently played recording by pressing "Replay Recording".
