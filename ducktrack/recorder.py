@@ -369,7 +369,9 @@ DOM_CAPTURE_KEYS = {
     'enter', 'tab', 'backspace', 'delete', # delete might be fn+backspace
     'esc', 'space', 
     'left', 'right', 'up', 'down', # Arrow keys
-    'pageup', 'pagedown', 'home', 'end' # Navigation
+    'pageup', 'pagedown', 'home', 'end', # Navigation
+    # Add modifier keys
+    'shift', 'ctrl', 'alt', 'cmd', 'control', 'option', 'command',
     # Add function keys (F1-F12) if desired: 'f1', 'f2', ...
 }
 
@@ -984,7 +986,9 @@ class Recorder(QThread):
             # Capture DOM snapshot if Chromium is focused and key is relevant
             dom_snapshot_path = None
             if self.is_chromium_focused and self.capture_data_path and \
-               (action == "press" and final_name in DOM_CAPTURE_KEYS or action == "release" and final_name in DOM_CAPTURE_KEYS or action == "flagschanged"):
+               (action == "press" and final_name in DOM_CAPTURE_KEYS or 
+                action == "release" and final_name in DOM_CAPTURE_KEYS or 
+                action_type_for_file == "flagschanged"):  # Always capture on modifier key changes
                 snapshot_mhtml = capture_chromium_dom_snapshot()
                 if snapshot_mhtml:
                     # Reuse tree_timestamp for consistency if available, else use current time
