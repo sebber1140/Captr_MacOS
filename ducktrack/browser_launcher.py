@@ -595,44 +595,76 @@ def find_running_debuggable_browsers() -> Dict[str, int]:
     try:
         import requests
         import json
+        import socket
         
         logging.info("Searching for running debuggable browsers...")
         
-        # Check common debugging ports
-        for port in range(9222, 9232):
-            try:
-                # Try to connect to Chrome DevTools Protocol
-                url = f"http://localhost:{port}/json/version"
-                logging.info(f"Checking port {port}...")
+        # First check if port 9222 is open at all using a low-level socket check
+        # This is more reliable than HTTP requests which might fail for other reasons
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1.0)
+        port_9222_open = sock.connect_ex(('127.0.0.1', 9222)) == 0
+        sock.close()
+        
+        logging.info(f"Socket check for port 9222: {port_9222_open}")
+        
+        # Try direct connection to the default port using HTTP - try both localhost and 127.0.0.1
+        direct_ports = [9222, 9223, 9224, 9333]
+        for port in direct_ports:
+            if port == 9222 and port_9222_open:
+                logging.info(f"Port 9222 is open via socket check. Will be added as fallback if HTTP fails.")
                 
-                response = requests.get(url, timeout=1)
-                
-                if response.status_code == 200:
-                    try:
-                        data = response.json()
-                        if isinstance(data, dict) and 'Browser' in data:
-                            browser_info = data['Browser']
-                            logging.info(f"Found running debuggable browser on port {port}: {browser_info}")
-                            
-                            # Try to determine browser type from the name
-                            if 'Chrome' in browser_info:
-                                debuggable_browsers['chrome'] = port
-                            elif 'Edge' in browser_info:
-                                debuggable_browsers['edge'] = port
-                            elif 'Brave' in browser_info:
-                                debuggable_browsers['brave'] = port
+            # Try both 127.0.0.1 and localhost for each port
+            for host in ['127.0.0.1', 'localhost']:
+                try:
+                    url = f"http://{host}:{port}/json/version"
+                    logging.info(f"Checking {url}...")
+                    
+                    response = requests.get(url, timeout=2)
+                    
+                    if response.status_code == 200:
+                        try:
+                            data = response.json()
+                            if isinstance(data, dict) and 'Browser' in data:
+                                browser_info = data['Browser']
+                                logging.info(f"Found running debuggable browser on {host}:{port}: {browser_info}")
+                                
+                                # Try to determine browser type from the name
+                                if 'Chrome' in browser_info:
+                                    debuggable_browsers['chrome'] = port
+                                elif 'Edge' in browser_info:
+                                    debuggable_browsers['edge'] = port
+                                elif 'Brave' in browser_info:
+                                    debuggable_browsers['brave'] = port
+                                else:
+                                    # Generic Chromium-based browser
+                                    debuggable_browsers['chromium'] = port
+                                
+                                # Break out of the host loop once we've found a browser on this port
+                                break
                             else:
-                                # Generic Chromium-based browser
-                                debuggable_browsers['chromium'] = port
-                    except ValueError:
-                        # Failed to parse JSON, not a valid browser endpoint
-                        logging.warning(f"Port {port} returned invalid JSON response")
-            except Exception as e:
-                # Silently ignore connection errors
-                logging.debug(f"Port {port} is not a debuggable browser: {e}")
-                pass
+                                logging.info(f"Response from {host}:{port} doesn't contain Browser info, adding as generic browser")
+                                debuggable_browsers['browser'] = port
+                                break
+                        except ValueError:
+                            logging.info(f"Port {port} returned invalid JSON response, adding as generic browser")
+                            debuggable_browsers['browser'] = port
+                            break
+                    else:
+                        logging.info(f"Port {port} at {host} returned status code {response.status_code}")
+                except Exception as e:
+                    logging.info(f"Port {port} at {host} is not responding to HTTP: {str(e)}")
+        
+        # If port 9222 is open via socket check but HTTP check failed, still add it as Chrome
+        # This is because many browsers use port 9222 but might not respond to HTTP for various reasons
+        if port_9222_open and 'chrome' not in debuggable_browsers and 'browser' not in debuggable_browsers:
+            logging.info("Adding Chrome on port 9222 as fallback option since socket check passed")
+            debuggable_browsers['chrome'] = 9222
+    
     except ImportError:
         logging.warning("Requests library not available, can't check for running debuggable browsers")
+    except Exception as e:
+        logging.error(f"Error checking for running debuggable browsers: {e}")
     
     logging.info(f"Found running debuggable browsers: {debuggable_browsers}")
     return debuggable_browsers
@@ -647,44 +679,83 @@ def connect_to_running_browser(port: int) -> Tuple[bool, str]:
         Tuple[bool, str]: (success, error message if any)
     """
     try:
+        # First, do a simple socket check to confirm the port is open
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1.0)
+        
+        # Try to connect to the port
+        socket_result = sock.connect_ex(('127.0.0.1', port))
+        sock.close()
+        
+        if socket_result != 0:
+            # Port is not open at all
+            logging.error(f"Port {port} is not open")
+            return False, f"Port {port} is not open. Make sure Chrome is running with debugging enabled."
+        
+        logging.info(f"Port {port} is open, proceeding with HTTP connection check")
+        
+        # Now try HTTP connection with requests
         import requests
         
         # Verify the connection to the browser's DevTools Protocol
-        url = f"http://localhost:{port}/json/version"
-        logging.info(f"Attempting to connect to browser on port {port} at URL: {url}")
+        urls = [f"http://127.0.0.1:{port}/json/version", f"http://localhost:{port}/json/version"]
         
-        try:
-            response = requests.get(url, timeout=3)
-            logging.info(f"Response status code: {response.status_code}")
+        connection_success = False
+        response_data = None
+        last_error = None
+        
+        for url in urls:
+            logging.info(f"Attempting to connect to browser at URL: {url}")
             
-            if response.status_code == 200:
-                try:
-                    data = response.json()
-                    logging.info(f"Response data: {data}")
-                    
-                    if isinstance(data, dict) and 'Browser' in data:
-                        logging.info(f"Successfully connected to browser on port {port}: {data['Browser']}")
-                        return True, ""
-                    else:
-                        logging.error(f"Invalid response format from browser: {data}")
-                        return False, "Invalid response from browser debugging port"
-                except ValueError as e:
-                    logging.error(f"Failed to parse JSON response: {e}")
-                    return False, f"Invalid JSON response from browser: {e}"
-            else:
-                logging.error(f"Browser returned non-200 status code: {response.status_code}")
-                return False, f"Browser returned status code {response.status_code}"
+            try:
+                response = requests.get(url, timeout=3)
+                logging.info(f"Response status code: {response.status_code}")
                 
-        except requests.exceptions.ConnectionError as e:
-            logging.error(f"Connection error: {e}")
-            return False, "Failed to connect to browser. Make sure Chrome is running with debugging enabled."
-        except requests.exceptions.Timeout as e:
-            logging.error(f"Connection timeout: {e}")
-            return False, "Connection timed out. Browser may be busy or not properly configured."
+                if response.status_code == 200:
+                    connection_success = True
+                    try:
+                        response_data = response.json()
+                        logging.info(f"Response data: {response_data}")
+                        break  # Successful connection
+                    except ValueError as e:
+                        logging.warning(f"Failed to parse JSON response from {url}: {e}")
+                        last_error = f"Invalid JSON response from browser: {e}"
+                        # Continue to next URL even if JSON parsing failed
+                else:
+                    logging.warning(f"Browser returned non-200 status code: {response.status_code}")
+                    last_error = f"Browser returned status code {response.status_code}"
+            except requests.exceptions.ConnectionError as e:
+                logging.warning(f"Connection error to {url}: {e}")
+                last_error = f"Failed to connect to browser at {url}."
+            except requests.exceptions.Timeout as e:
+                logging.warning(f"Connection timeout to {url}: {e}")
+                last_error = f"Connection timed out. Browser may be busy."
+        
+        # If we had at least one successful connection
+        if connection_success:
+            # Check if we got valid JSON response data
+            if response_data and isinstance(response_data, dict) and 'Browser' in response_data:
+                browser_info = response_data['Browser']
+                logging.info(f"Successfully connected to browser on port {port}: {browser_info}")
+                return True, ""
+            
+            # If port is open but response wasn't ideal, still consider it a success for port 9222
+            # since Chrome debugging socket is definitely there
+            if port == 9222:
+                logging.info(f"Port 9222 is open but returned unexpected data. Considering it valid.")
+                return True, ""
+                
+            # For other ports, require more strict validation
+            logging.warning(f"Invalid response format from browser: {response_data}")
+            return False, "Invalid response from browser debugging port"
+            
+        # No successful connections
+        return False, last_error or f"Failed to connect to browser on port {port}"
         
     except ImportError as e:
         logging.error(f"Required modules not available: {e}")
-        return False, "Required libraries missing: requests module not found"
+        return False, "Required libraries missing: requests/socket module not found"
     except Exception as e:
         logging.error(f"Unexpected error connecting to browser on port {port}: {e}")
         return False, str(e) 

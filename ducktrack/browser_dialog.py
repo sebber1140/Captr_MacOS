@@ -13,6 +13,7 @@ from PyQt6.QtGui import QFont, QPalette, QColor
 import os
 from platform import system
 from PyQt6.QtWidgets import QApplication
+import logging
 
 from .browser_launcher import (find_installed_browsers, launch_browser,
                              get_default_browser, DEFAULT_DEBUG_PORT,
@@ -23,17 +24,23 @@ class BrowserLauncherDialog(QDialog):
     
     browser_launched = pyqtSignal(str, int, bool)  # browser_key, port, success
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, app=None):
         super().__init__(parent)
         
         self.setWindowTitle("Launch Browser")
         self.resize(500, 400)  # Increase dialog size for better button display
+        
+        # Store reference to the main app
+        self.app = app
         
         # Store running browsers with their ports
         self.running_browsers = {}
         
         self.create_ui()
         self.populate_browsers()
+        
+        # Detect running browsers on startup
+        self.populate_running_browsers()
         
         # Make sure initial button states are correct
         self.update_launch_button_state()
@@ -244,19 +251,22 @@ class BrowserLauncherDialog(QDialog):
         """)
     
     def update_launch_button_state(self):
-        """Update the launch button state based on current selections"""
+        """Update the state of the launch button based on selected browser and mode"""
+        # Enable the button if we have a browser selected or we're launching a new instance
         if self.launch_new_radio.isChecked():
-            # Enable button if a browser is selected
-            browser_key = self.browser_combo.currentData()
-            self.launch_button.setEnabled(bool(browser_key))
-            self.launch_button.setText("Launch Browser")
-            self.launch_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; }")
+            # Always enable button when launching new browser
+            self.launch_button.setEnabled(True)
+            self.launch_button.setText("Launch New Browser")
         else:
-            # Enable button if a running browser is selected
-            browser_key = self.running_browser_combo.currentData()
-            self.launch_button.setEnabled(bool(browser_key))
+            # For connecting to existing browser
+            has_running_browser = self.running_browser_combo.currentData() is not None and self.running_browser_combo.currentData() != ""
+            self.launch_button.setEnabled(has_running_browser)
             self.launch_button.setText("Connect to Browser")
-            self.launch_button.setStyleSheet("QPushButton { background-color: #2196F3; color: white; font-weight: bold; }")
+        
+        # Log the current state for debugging
+        logging.debug(f"Launch button enabled: {self.launch_button.isEnabled()}, "
+                     f"Text: {self.launch_button.text()}, "
+                     f"Has running browser: {self.running_browser_combo.currentData() is not None}")
     
     @pyqtSlot(bool)
     def toggle_browser_mode(self, checked):
@@ -284,57 +294,27 @@ class BrowserLauncherDialog(QDialog):
     @pyqtSlot()
     def detect_running_browsers(self):
         """Detect running browsers with debugging enabled"""
-        self.running_browser_combo.clear()
+        # Show busy cursor
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         
-        # Show detecting message
-        if self.debug_check.isChecked():
-            self.debug_text.setVisible(True)
-            self.debug_text.setText("Detecting running browsers with debugging enabled...")
-            QApplication.processEvents()  # Force UI update
-            
-        self.running_browsers = find_running_debuggable_browsers()
-        
-        if self.running_browsers:
-            for browser_key, port in self.running_browsers.items():
-                display_name = {
-                    'chrome': 'Google Chrome', 
-                    'edge': 'Microsoft Edge',
-                    'brave': 'Brave Browser',
-                    'chromium': 'Chromium'
-                }.get(browser_key, browser_key.capitalize())
-                
-                self.running_browser_combo.addItem(f"{display_name} (port {port})", browser_key)
-            
-            # Show success in debug area
-            if self.debug_check.isChecked():
-                self.debug_text.setText(
-                    f"Found {len(self.running_browsers)} running browser(s) with debugging enabled.\n\n"
-                    "You can connect to one of these browsers to capture DOM snapshots.\n"
-                    "No new browser window will be opened."
-                )
-        else:
-            self.running_browser_combo.addItem("No running browsers with debugging enabled", "")
-            
-            # Show help text to guide user how to enable debugging
-            self.debug_text.setText(
-                "No running browsers with debugging enabled found.\n\n"
-                "To use an existing browser with debugging enabled:\n\n"
-                "1. Close all instances of Chrome/Chromium\n"
-                "2. Start Chrome with debugging:\n"
-                "   - macOS: open -a \"Google Chrome\" --args --remote-debugging-port=9222\n"
-                "   - Windows: chrome.exe --remote-debugging-port=9222\n\n"
-                "Or choose 'Launch new browser' to start a fresh browser with debugging enabled."
-            )
-            
-        # Update button state after detecting browsers
-        self.update_launch_button_state()
-        
-        # Connect the combo box change signal if not already connected
         try:
-            self.running_browser_combo.currentIndexChanged.disconnect(self.update_launch_button_state)
-        except:
-            pass  # If not connected, just continue
-        self.running_browser_combo.currentIndexChanged.connect(self.update_launch_button_state)
+            # Clear and repopulate the combobox
+            self.populate_running_browsers()
+            
+            # Log the detection results
+            if self.running_browser_combo.count() == 0 or self.running_browser_combo.currentData() == "":
+                logging.info("No running browsers with debugging enabled found")
+                self.debug_text.append("No running browsers with debugging enabled found.")
+            else:
+                detected_count = self.running_browser_combo.count()
+                logging.info(f"Detected {detected_count} running browser(s) with debugging enabled")
+                self.debug_text.append(f"Detected {detected_count} running browser(s) with debugging enabled")
+        finally:
+            # Restore cursor
+            QApplication.restoreOverrideCursor()
+        
+        # Make sure launch button is enabled/disabled appropriately
+        self.update_launch_button_state()
     
     def populate_browsers(self):
         """Populate the browsers dropdown with installed browsers"""
@@ -483,52 +463,39 @@ class BrowserLauncherDialog(QDialog):
             self.browser_launched.emit(browser_key, 0, False)
     
     def _connect_to_running_browser(self):
-        """Connect to a running browser"""
-        browser_key = self.running_browser_combo.currentData()
+        """Connect to a running browser with debugging enabled"""
+        selected_browser = self.running_browser_combo.currentData()
+        logging.info(f"Connecting to running browser: {selected_browser}")
         
-        if not browser_key:
-            QMessageBox.warning(
-                self, 
-                "No Running Browser Selected", 
-                "No running browser with debugging enabled was found. Please start a browser with debugging enabled or use the 'Launch new browser' option."
-            )
+        if not selected_browser:
+            logging.warning("No browser selected or no browser available")
+            QMessageBox.warning(self, "No Browser Selected", 
+                              "No debugging-enabled browser selected or no browser is available.")
             return
         
-        # Get the port from our stored dictionary
-        port = self.running_browsers.get(browser_key, DEFAULT_DEBUG_PORT)
-        
-        # Show connecting message in debug area if enabled
-        if self.debug_check.isChecked():
-            self.debug_text.setVisible(True)
-            self.debug_text.setText(f"Attempting to connect to browser on port {port}...")
-            QApplication.processEvents()  # Force UI update
-        
-        # Verify connection
-        success, error = connect_to_running_browser(port)
-        
-        if success:
-            # Show success in debug area if enabled
-            if self.debug_check.isChecked():
-                self.debug_text.setText(f"Successfully connected to browser on port {port}!")
-                QApplication.processEvents()  # Force UI update
+        # Parse the browser data format (browser_name:port)
+        try:
+            browser_name, port_str = selected_browser.split(':')
+            port = int(port_str)
             
-            # Emit signal
-            self.browser_launched.emit(browser_key, port, True)
-            self.accept()
-        else:
-            # Show detailed error in debug area if enabled
-            if self.debug_check.isChecked():
-                self.debug_text.setText(f"Connection failed: {error}\n\nPlease check that Chrome is running with debugging enabled.")
+            logging.info(f"Connecting to {browser_name} on port {port}")
             
-            QMessageBox.critical(
-                self,
-                "Browser Connection Failed",
-                f"Failed to connect to browser: {error}\n\nPlease make sure the browser is running with debugging enabled."
-            )
-            # Emit signal with failure
-            self.browser_launched.emit(browser_key, 0, False)
+            # Try direct connection using the connect_to_running_browser function
+            success, error = connect_to_running_browser(port)
+            if success:
+                # Emit the browser_launched signal for the parent to handle
+                self.browser_launched.emit(browser_name, port, True)
+                self.accept()  # Close dialog on success
+            else:
+                logging.error(f"Failed to connect to browser on port {port}: {error}")
+                QMessageBox.warning(self, "Connection Failed", 
+                                  f"Failed to connect to {browser_name} on port {port}: {error}")
+        except ValueError as e:
+            logging.error(f"Invalid browser data format: {selected_browser} - {str(e)}")
+            QMessageBox.warning(self, "Invalid Browser Data", 
+                              "The selected browser data is in an invalid format.")
     
-    @pyqtSlot()
+    @pyqtSlot(int)
     def toggle_debug_info(self, state):
         """Toggle the visibility of debug info"""
         self.debug_text.setVisible(state > 0)
@@ -630,3 +597,66 @@ class BrowserLauncherDialog(QDialog):
             
             # Select the newly added browser
             self.browser_combo.setCurrentIndex(self.browser_combo.count() - 1) 
+
+    def populate_running_browsers(self):
+        """Populate the running browsers combobox"""
+        self.running_browser_combo.clear()
+        
+        # Get detected browsers
+        running_browsers = find_running_debuggable_browsers()
+        
+        logging.info(f"Found running browsers: {running_browsers}")
+        
+        # Add debug info
+        if self.debug_check.isChecked():
+            self.debug_text.append(f"Browser detection results: {running_browsers}")
+        
+        # Check if port 9222 is open with a direct socket check (double-check our results)
+        port_9222_open = False
+        try:
+            import socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1.0)
+            result = sock.connect_ex(('127.0.0.1', 9222))
+            sock.close()
+            port_9222_open = (result == 0)
+            if self.debug_check.isChecked():
+                self.debug_text.append(f"Direct socket check for port 9222: {'OPEN' if port_9222_open else 'CLOSED'} (result={result})")
+        except Exception as e:
+            logging.error(f"Error checking port 9222: {e}")
+            if self.debug_check.isChecked():
+                self.debug_text.append(f"Error checking port 9222: {e}")
+        
+        if not running_browsers:
+            # If no browsers detected but port 9222 is open, add it manually as a fallback
+            if port_9222_open:
+                logging.info("No browsers detected via HTTP, but port 9222 is open. Adding Chrome as fallback option.")
+                self.running_browser_combo.addItem("Chrome (port 9222)", "chrome:9222")
+                
+                if self.debug_check.isChecked():
+                    self.debug_text.append(
+                        "Port 9222 is open but no browser was detected via HTTP requests.\n"
+                        "This could happen if:\n"
+                        "1. Your browser has the debugging port enabled but is blocking HTTP access\n"
+                        "2. The port is being used by another application\n"
+                        "Chrome has been added as a fallback option."
+                    )
+            else:
+                self.running_browser_combo.addItem("No browsers with debugging enabled", "")
+                
+                if self.debug_check.isChecked():
+                    self.debug_text.append(
+                        "No browsers with debugging enabled were detected.\n\n"
+                        "To enable Chrome debugging:\n"
+                        "1. Close all Chrome windows\n"
+                        "2. Start Chrome with: --remote-debugging-port=9222\n\n"
+                        "Or use the 'Launch New Browser' option to start a browser with debugging."
+                    )
+        else:
+            for browser_name, port in running_browsers.items():
+                display_name = browser_name.title()
+                # Store the browser name and port as combined data value
+                self.running_browser_combo.addItem(f"{display_name} (port {port})", f"{browser_name}:{port}")
+                
+        # Update button state based on available browsers
+        self.update_launch_button_state() 

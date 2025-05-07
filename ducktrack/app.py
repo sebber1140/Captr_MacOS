@@ -168,7 +168,7 @@ class MainInterface(QWidget):
     @pyqtSlot()
     def show_browser_launcher(self):
         """Show the browser launcher dialog"""
-        dialog = BrowserLauncherDialog(self)
+        dialog = BrowserLauncherDialog(self, self)  # Pass self as both parent and app reference
         dialog.browser_launched.connect(self.on_browser_launched)
         dialog.exec()
     
@@ -367,6 +367,14 @@ class MainInterface(QWidget):
             return
         except Exception as e:
             pass # Silently ignore other polling errors for now
+
+    def connect_to_chrome_debugging(self, port):
+        """Connect to Chrome with debugging enabled on the specified port
+        Returns True if successful, False otherwise"""
+        from .browser_launcher import connect_to_running_browser
+        
+        success, error = connect_to_running_browser(port)
+        return success
 
 def resource_path(relative_path: str) -> str:
     if hasattr(sys, '_MEIPASS'):

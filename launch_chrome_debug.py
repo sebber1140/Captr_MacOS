@@ -11,6 +11,7 @@ import webbrowser
 import time
 import logging
 import argparse
+from platform import system
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -69,10 +70,10 @@ def get_installed_browsers():
     installed = {}
     
     for browser_name, paths in BROWSERS.items():
-        if sys.platform in paths:
-            if os.path.exists(paths[sys.platform]):
-                installed[browser_name] = paths[sys.platform]
-            elif sys.platform == 'win32' and 'win32_alt' in paths and os.path.exists(paths['win32_alt']):
+        if system() in paths:
+            if os.path.exists(paths[system()]):
+                installed[browser_name] = paths[system()]
+            elif system() == 'win32' and 'win32_alt' in paths and os.path.exists(paths['win32_alt']):
                 installed[browser_name] = paths['win32_alt']
                 
     return installed
@@ -98,7 +99,7 @@ def launch_browser_with_debugging(browser_name='chrome', port=DEFAULT_PORT, url=
         if url:
             # Try to open URL in the existing browser instance
             try:
-                if sys.platform == 'darwin':
+                if system() == 'darwin':
                     app_name = BROWSERS[browser_name].get('darwin_app', browser_name)
                     subprocess.run(['open', '-a', app_name, url])
                     logging.info(f"Opened {url} in existing {browser_name} instance")
@@ -126,7 +127,7 @@ def launch_browser_with_debugging(browser_name='chrome', port=DEFAULT_PORT, url=
     
     # Launch browser with debugging enabled
     try:
-        if sys.platform == 'darwin':  # macOS
+        if system() == 'darwin':  # macOS
             # Get the app name for open command
             app_name = BROWSERS[browser_name].get('darwin_app', browser_name)
             cmd = ['open', '-a', app_name, '--args', f'--remote-debugging-port={port}']
@@ -136,7 +137,7 @@ def launch_browser_with_debugging(browser_name='chrome', port=DEFAULT_PORT, url=
             logging.info(f"Running command: {' '.join(cmd)}")
             subprocess.Popen(cmd)
             
-        elif sys.platform == 'win32':  # Windows
+        elif system() == 'win32' or system() == 'windows':  # Windows
             cmd = [browser_path, f'--remote-debugging-port={port}']
             if url:
                 cmd.append(url)
@@ -144,7 +145,7 @@ def launch_browser_with_debugging(browser_name='chrome', port=DEFAULT_PORT, url=
             logging.info(f"Running command: {' '.join(cmd)}")
             subprocess.Popen(cmd)
             
-        elif sys.platform.startswith('linux'):  # Linux
+        elif system().startswith('linux'):  # Linux
             cmd = [browser_path, f'--remote-debugging-port={port}']
             if url:
                 cmd.append(url)
@@ -172,6 +173,155 @@ def launch_browser_with_debugging(browser_name='chrome', port=DEFAULT_PORT, url=
     except Exception as e:
         logging.error(f"Error launching {browser_name} with debugging: {e}")
         return False
+
+def launch_chrome_with_debugging():
+    """Launch Chrome with debugging enabled on port 9222"""
+    port = 9222
+    
+    print(f"Launching Chrome with debugging enabled on port {port}...")
+    
+    # Determine command based on OS
+    current_os = system()
+    print(f"Detected operating system: {current_os}")
+    
+    if current_os == 'Darwin':  # macOS
+        # First, check if Chrome is running
+        try:
+            result = subprocess.run(['pgrep', 'Google Chrome'], capture_output=True, text=True)
+            if result.stdout.strip():
+                print("Warning: Chrome is already running. It's recommended to close all Chrome windows first.")
+                response = input("Do you want to continue anyway? (y/n): ")
+                if response.lower() != 'y':
+                    print("Aborted.")
+                    return
+        except Exception:
+            pass
+        
+        # Create a user data directory
+        user_data_dir = os.path.expanduser(f"~/Library/Application Support/DuckTrack/Browser_Debug_{port}")
+        os.makedirs(user_data_dir, exist_ok=True)
+        print(f"Using browser profile: {user_data_dir}")
+        
+        # Build the command
+        cmd = [
+            'open',
+            '-a',
+            'Google Chrome',
+            '--args',
+            f'--remote-debugging-port={port}',
+            f'--user-data-dir={user_data_dir}',
+            '--no-first-run',
+            '--no-default-browser-check',
+            'about:blank'
+        ]
+        
+    elif current_os == 'Windows':  # Windows
+        # Find Chrome executable
+        chrome_paths = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            os.path.expanduser("~") + r"\AppData\Local\Google\Chrome\Application\chrome.exe"
+        ]
+        
+        chrome_exe = None
+        for path in chrome_paths:
+            if os.path.exists(path):
+                chrome_exe = path
+                break
+        
+        if not chrome_exe:
+            print("Error: Could not find Chrome executable")
+            return
+        
+        # Create a user data directory
+        user_data_dir = os.path.join(os.path.expanduser("~"), f"DuckTrack_Browser_Debug_{port}")
+        os.makedirs(user_data_dir, exist_ok=True)
+        print(f"Using browser profile: {user_data_dir}")
+        
+        # Build the command
+        cmd = [
+            chrome_exe,
+            f'--remote-debugging-port={port}',
+            f'--user-data-dir={user_data_dir}',
+            '--no-first-run',
+            '--no-default-browser-check',
+            'about:blank'
+        ]
+        
+    elif current_os == 'Linux':  # Linux
+        # Find Chrome executable
+        chrome_paths = [
+            '/usr/bin/google-chrome',
+            '/usr/bin/google-chrome-stable',
+            '/usr/bin/chromium-browser',
+            '/usr/bin/chromium'
+        ]
+        
+        chrome_exe = None
+        for path in chrome_paths:
+            if os.path.exists(path):
+                chrome_exe = path
+                break
+        
+        if not chrome_exe:
+            print("Error: Could not find Chrome/Chromium executable")
+            return
+        
+        # Create a user data directory
+        user_data_dir = os.path.expanduser(f"~/.ducktrack_browser_debug_{port}")
+        os.makedirs(user_data_dir, exist_ok=True)
+        print(f"Using browser profile: {user_data_dir}")
+        
+        # Build the command
+        cmd = [
+            chrome_exe,
+            f'--remote-debugging-port={port}',
+            f'--user-data-dir={user_data_dir}',
+            '--no-first-run',
+            '--no-default-browser-check',
+            'about:blank'
+        ]
+    
+    else:
+        print(f"Error: Unsupported operating system: {current_os}")
+        return
+    
+    print(f"Running command: {' '.join(cmd)}")
+    
+    try:
+        # Launch Chrome
+        proc = subprocess.Popen(cmd)
+        
+        # Verify Chrome launched
+        if proc.poll() is None:
+            print("Chrome launched successfully!")
+            
+            # Wait for Chrome to initialize
+            print("Waiting for Chrome to initialize (5 seconds)...")
+            time.sleep(5)
+            
+            print(f"\nNow you can open DuckTrack and use 'Connect to browser' option to connect to Chrome on port {port}.")
+            print("Or launch it directly with: python main.py")
+            
+            # Optionally, check if the port is open
+            try:
+                import socket
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1.0)
+                result = sock.connect_ex(('127.0.0.1', port))
+                sock.close()
+                
+                if result == 0:
+                    print(f"✅ Verified: Port {port} is now open and ready for connections.")
+                else:
+                    print(f"❌ Warning: Port {port} is not open. Chrome may not have debugging enabled.")
+            except:
+                pass
+        else:
+            print(f"Error: Chrome process exited with code {proc.returncode}")
+    
+    except Exception as e:
+        print(f"Error launching Chrome: {e}")
 
 def main():
     """Main function"""
@@ -219,4 +369,7 @@ def main():
         logging.error(f"Failed to launch {browser_to_use} with debugging enabled.")
         
 if __name__ == "__main__":
-    main() 
+    print("=== Chrome Debugger Launcher ===")
+    print("This tool will launch Chrome with debugging enabled for DuckTrack")
+    print("=" * 35)
+    launch_chrome_with_debugging() 
