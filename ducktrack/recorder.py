@@ -403,14 +403,19 @@ class Recorder(QThread):
         self.focused_pid = None
         self.capture_data_path = None # Path for both a11y trees and DOM snaps
         
-        # Timestamp tracking for throttling captures
+        # Initialize DOM capture timing trackers 
         self.last_a11y_capture_time = 0
         self.last_dom_capture_time = 0
         
         # Add tracking for previously captured DOMs and URLs to prevent duplicates
         self.last_captured_url = None
         self.last_dom_capture_time_by_url = {}  # Track time of last DOM capture by URL
-        self.dom_capture_cooldown = 2.0  # Minimum seconds between DOM captures for same URL
+        self.dom_capture_cooldown = 5.0  # Increase from 2.0 to 5.0 seconds to reduce duplicates
+        self.last_dom_url_hash = None  # Track last URL hash for better deduplication
+        
+        # Add tracking for a11y tree captures to prevent duplicates
+        self.last_a11y_content_hash = None  # Track last a11y tree hash for deduplication
+        self.a11y_capture_cooldown = 5.0  # Minimum seconds between a11y captures for similar content
         
         # Track the last DOM snapshot's hash to avoid duplicates
         self.last_dom_hash = None
@@ -502,34 +507,44 @@ class Recorder(QThread):
                 # Capture accessibility tree on macOS with less frequency (only for specific events)
                 if system() == "Darwin" and HAS_PYOBJC:
                     current_time = time.perf_counter()
-                    # Always try to capture for mouse releases, with minimal time restriction
-                    if current_time - self.last_a11y_capture_time >= 1.0:  # Reduced from MIN_A11Y_CAPTURE_INTERVAL
+                    # Check if enough time has elapsed since last a11y tree capture
+                    if current_time - self.last_a11y_capture_time >= self.a11y_capture_cooldown:
                         logging.info(f"Capturing accessibility tree for {button_type} mouse release")
                         tree = capture_macos_accessibility_tree()
                         if tree:
                             try:
-                                # Create directory for accessibility trees if it doesn't exist
-                                a11y_path = self.capture_data_path
-                                os.makedirs(a11y_path, exist_ok=True)
+                                # Check for duplicates by hashing the tree content
+                                tree_str = json.dumps(tree)
+                                tree_hash = hashlib.md5(tree_str.encode()).hexdigest()
                                 
-                                # Construct the filename for the accessibility tree JSON file
-                                a11y_file = os.path.join(a11y_path, f"a11y_{button_type}_click_{current_time:.6f}.json")
-                                
-                                # Save the tree to a file
-                                with open(a11y_file, 'w', encoding='utf-8') as f:
-                                    f.write(json.dumps(tree))
-                                
-                                logging.info(f"Captured accessibility tree on {button_type} click: {a11y_file}")
-                                
-                                # Add the a11y path to the click event
-                                click_event["accessibility_tree"] = a11y_file
-                                
-                                # Update last capture time
-                                self.last_a11y_capture_time = current_time
+                                # Skip if this tree is very similar to the last one
+                                if tree_hash == self.last_a11y_content_hash:
+                                    logging.info(f"Skipping duplicate a11y tree capture (hash: {tree_hash[:8]})")
+                                else:
+                                    # Create directory for accessibility trees if it doesn't exist
+                                    os.makedirs(self.capture_data_path, exist_ok=True)
+                                    
+                                    # Construct the filename for the accessibility tree JSON file
+                                    a11y_file = os.path.join(self.capture_data_path, f"a11y_{button_type}_click_{current_time:.6f}.json")
+                                    
+                                    # Save the tree to a file
+                                    with open(a11y_file, 'w', encoding='utf-8') as f:
+                                        f.write(json.dumps(tree))
+                                    
+                                    logging.info(f"Captured accessibility tree on {button_type} click: {a11y_file}")
+                                    
+                                    # Update tracking info
+                                    self.last_a11y_content_hash = tree_hash
+                                    self.last_a11y_capture_time = current_time
+                                    
+                                    # Add the a11y path to the click event
+                                    click_event["accessibility_tree"] = a11y_file
                             except Exception as e:
                                 logging.error(f"Failed to save accessibility tree: {e}")
-                            else:
-                                logging.info(f"No accessibility tree available for {button_type} click")
+                        else:
+                            logging.info(f"No accessibility tree available for {button_type} click")
+                    else:
+                        logging.info(f"Skipping a11y tree capture - cooldown period active ({current_time - self.last_a11y_capture_time:.2f}s < {self.a11y_capture_cooldown}s)")
                     
                     # Get URL and title for DOM capture
                     url, title = self._get_active_tab_url_title() or ("", "")
@@ -882,12 +897,28 @@ class Recorder(QThread):
                     title = active_tab.get('title', 'Unknown')
                     window_id = active_tab.get('id', 'Unknown')
                     
+                    # Check if mouse button is currently pressed - if so, delay capture
+                    if self.mouse_buttons_pressed:
+                        logging.info("Delaying page change capture because mouse button is pressed")
+                        return
+                    
                     # Check if URL or window changed
                     if url != self.current_browser_url or window_id != self.current_window_id:
                         self.last_browser_url = self.current_browser_url
                         self.current_browser_url = url
                         self.last_window_id = self.current_window_id
                         self.current_window_id = window_id
+                        
+                        # Extra check: if this URL was captured very recently (by a click handler), skip it
+                        url_hash = hashlib.md5(url.encode()).hexdigest()[:8] if url else None
+                        
+                        # Skip if we just captured this exact URL hash very recently
+                        current_time = time.perf_counter()
+                        if url_hash == self.last_dom_url_hash:
+                            time_since_last_capture = current_time - self.last_dom_capture_time
+                            if time_since_last_capture < self.dom_capture_cooldown * 0.5:
+                                logging.info(f"Skipping page change capture - URL hash {url_hash} captured too recently")
+                                return
                         
                         logging.info(f"Browser page changed to: {title} ({url})")
                         
@@ -912,7 +943,7 @@ class Recorder(QThread):
                 logging.debug(f"Error checking browser tabs: {e}")
         except Exception as e:
             logging.error(f"Error in background page check: {e}")
-        
+    
     def _capture_dom_for_page_change(self, url, title):
         """Capture DOM snapshot when the page changes"""
         if not self.capture_data_path:
@@ -945,10 +976,20 @@ class Recorder(QThread):
             
             current_time = time.perf_counter()
             
+            # Generate a URL hash to detect same pages even with different URL params
+            url_hash = hashlib.md5(url.encode()).hexdigest()[:8] if url else None
+            
+            # Skip if we just captured this exact URL hash very recently (unless it's a page change)
+            if url_hash == self.last_dom_url_hash and not capture_type.startswith("page_change"):
+                time_since_last_capture = current_time - self.last_dom_capture_time
+                if time_since_last_capture < self.dom_capture_cooldown * 0.5:  # Use stricter cooldown for same URL hash
+                    logging.info(f"Skipping DOM capture for {url_hash} - very recent duplicate ({time_since_last_capture:.2f}s < {self.dom_capture_cooldown * 0.5}s)")
+                    return None
+            
             # Check if we've captured too recently for this URL
             if url in self.last_dom_capture_time_by_url:
                 time_since_last_capture = current_time - self.last_dom_capture_time_by_url[url]
-                # If this is a click on the same URL and it's been less than N seconds, skip capturing
+                # If this is a click on the same URL and it's been less than cooldown seconds, skip capturing
                 if capture_type.startswith("click_") and time_since_last_capture < self.dom_capture_cooldown:
                     logging.info(f"Skipping DOM capture for {url} - cooldown period active ({time_since_last_capture:.2f}s < {self.dom_capture_cooldown}s)")
                     return None
@@ -990,7 +1031,6 @@ class Recorder(QThread):
                 os.makedirs(self.capture_data_path, exist_ok=True)
                 
                 # Create a unique filename
-                url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
                 dom_file = f"dom_{capture_type}_{url_hash}_{current_time:.6f}.mhtml"
                 dom_file_path = os.path.join(self.capture_data_path, dom_file)
                 
@@ -1002,6 +1042,7 @@ class Recorder(QThread):
                 self.last_captured_url = url
                 self.last_dom_capture_time_by_url[url] = current_time
                 self.last_dom_hash = dom_hash
+                self.last_dom_url_hash = url_hash
                 
                 # Log the capture
                 logging.info(f"DOM snapshot captured: {dom_file_path}")
@@ -1014,7 +1055,7 @@ class Recorder(QThread):
             except Exception as e:
                 logging.error(f"Error capturing DOM snapshot: {e}")
                 return None
-                
+
     def _calculate_dom_hash(self, dom_data):
         """Calculate a hash of the DOM data to detect duplicate captures.
         This extracts the key parts of the DOM that would indicate if it's a different page.
@@ -1722,17 +1763,15 @@ class Recorder(QThread):
             if action == "release" and (
                 final_name in important_keys or 
                 (final_name in A11Y_CAPTURE_KEYS and 
-                 current_time - self.last_a11y_capture_time >= MIN_A11Y_CAPTURE_INTERVAL)):
+                 current_time - self.last_a11y_capture_time >= self.a11y_capture_cooldown)):
                 should_schedule_delayed_capture = True
                 logging.info(f"Should schedule delayed capture for key release: {final_name}")
             # Also capture for modifier key changes if enough time has passed
             elif (action_type_for_file == "flagschanged" and 
-                 current_time - self.last_a11y_capture_time >= MIN_A11Y_CAPTURE_INTERVAL):
+                 current_time - self.last_a11y_capture_time >= self.a11y_capture_cooldown):
                 should_capture_a11y = True  # Immediate capture for modifier changes
                 logging.info(f"Should capture a11y tree for modifier change: {final_name}")
             
-            # No longer capturing on key press, even for important keys
-                
             # Schedule a delayed capture to give UI time to update
             if should_schedule_delayed_capture and self.capture_data_path:
                 try:
@@ -1756,19 +1795,16 @@ class Recorder(QThread):
                             tree_hash = hashlib.md5(tree_str.encode()).hexdigest()
                             
                             with self.a11y_capture_lock:
-                                if tree_hash in self.recent_a11y_hashes:
+                                # Skip if this tree is very similar to the last one
+                                if tree_hash == self.last_a11y_content_hash:
                                     logging.info(f"Skipping duplicate delayed a11y tree (hash: {tree_hash[:8]})")
                                     return
                                 
                                 # Add to recent hashes
-                                self.recent_a11y_hashes.append(tree_hash)
-                                if len(self.recent_a11y_hashes) > RECENT_A11Y_HASH_CAPACITY:
-                                    self.recent_a11y_hashes.pop(0)
+                                self.last_a11y_content_hash = tree_hash
+                                self.last_a11y_capture_time = time.perf_counter()
                                 
-                                timestamp = time.perf_counter()
-                                self.last_a11y_capture_time = timestamp
-                                
-                                filename = f"a11y_delayed_{key_name}_{timestamp:.6f}.json"
+                                filename = f"a11y_delayed_{key_name}_{self.last_a11y_capture_time:.6f}.json"
                                 filepath = os.path.join(self.capture_data_path, filename)
                                 
                                 with open(filepath, 'w') as f:
@@ -1777,7 +1813,7 @@ class Recorder(QThread):
                                 
                                 # Create an event for the delayed capture
                                 event = {
-                                    "time_stamp": timestamp,
+                                    "time_stamp": self.last_a11y_capture_time,
                                     "action": "delayed_a11y_capture",
                                     "key": key_name,
                                     "accessibility_tree": filepath
@@ -1792,13 +1828,10 @@ class Recorder(QThread):
                                     # Check for duplicate
                                     content_hash = hashlib.md5(snapshot_mhtml.encode('utf-8', 'replace')[:10000]).hexdigest()
                                     
-                                    if content_hash not in self.recent_dom_hashes:
-                                        self.recent_dom_hashes.append(content_hash)
-                                        if len(self.recent_dom_hashes) > RECENT_DOM_HASH_CAPACITY:
-                                            self.recent_dom_hashes.pop(0)
-                                        
+                                    if content_hash != self.last_dom_hash:
                                         dom_timestamp = time.perf_counter()
                                         self.last_dom_capture_time = dom_timestamp
+                                        self.last_dom_hash = content_hash
                                         
                                         dom_filename = f"dom_delayed_{key_name}_{dom_timestamp:.6f}.mhtml"
                                         dom_filepath = os.path.join(self.capture_data_path, dom_filename)
@@ -1836,16 +1869,14 @@ class Recorder(QThread):
                     tree_str = json.dumps(tree)
                     tree_hash = hashlib.md5(tree_str.encode()).hexdigest()
                     
-                    if tree_hash in self.recent_a11y_hashes:
+                    if tree_hash == self.last_a11y_content_hash:
                         logging.info(f"Skipping duplicate a11y tree for key {final_name} (hash: {tree_hash[:8]})")
                     else:
-                        # Add to recent hashes
-                        self.recent_a11y_hashes.append(tree_hash)
-                        if len(self.recent_a11y_hashes) > RECENT_A11Y_HASH_CAPACITY:
-                            self.recent_a11y_hashes.pop(0)
+                        # Update tracking
+                        self.last_a11y_content_hash = tree_hash
+                        self.last_a11y_capture_time = current_time
                         
                         tree_timestamp = current_time
-                        self.last_a11y_capture_time = tree_timestamp  # Update last capture time
                         
                         filename = f"a11y_{action_type_for_file}_{tree_timestamp:.6f}.json"
                         filepath = os.path.join(self.capture_data_path, filename)
