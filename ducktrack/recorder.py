@@ -31,10 +31,22 @@ if system() == "Darwin":
         import ApplicationServices
         # ctypes and find_library are not needed for this revised approach
 
-        kAXValueCGPointType = ApplicationServices.kAXValueCGPointType
-        kAXValueCGSizeType = ApplicationServices.kAXValueCGSizeType
-        kAXValueCGRectType = ApplicationServices.kAXValueCGRectType
-        kAXValueCFRangeType = ApplicationServices.kAXValueCFRangeType
+        # Set up default values in case we can't get the real ones
+        kAXValueCGPointType = getattr(ApplicationServices, 'kAXValueCGPointType', 1)  # Fallback to 1
+        kAXValueCGSizeType = getattr(ApplicationServices, 'kAXValueCGSizeType', 2)   # Fallback to 2
+        kAXValueCGRectType = getattr(ApplicationServices, 'kAXValueCGRectType', 3)   # Fallback to 3
+        kAXValueCFRangeType = getattr(ApplicationServices, 'kAXValueCFRangeType', 4) # Fallback to 4
+
+        # Check if we can properly initialize Accessibility constants
+        _has_ax_constants = (hasattr(ApplicationServices, 'kAXValueCGPointType') and
+                            hasattr(ApplicationServices, 'kAXValueCGSizeType') and
+                            hasattr(ApplicationServices, 'kAXValueCGRectType') and
+                            hasattr(ApplicationServices, 'kAXValueCFRangeType'))
+                            
+        if _has_ax_constants:
+            logging.info("Successfully initialized ApplicationServices constants")
+        else:
+            logging.warning("Could not initialize all ApplicationServices constants, using fallback values")
 
         _AXUIElementCreateApplication_func = None
         if hasattr(ApplicationServices, 'AXUIElementCreateApplication'):
@@ -43,29 +55,73 @@ if system() == "Darwin":
         else:
             logging.warning("AXUIElementCreateApplication not found directly on ApplicationServices. Trying bundle load then objc.function.")
             try:
-                bundle = objc.loadBundle("ApplicationServices", 
-                                         bundle_path=AppKit.NSBundle.bundleWithIdentifier_("com.apple.ApplicationServices").bundlePath(), 
-                                         module_globals=globals())
-                if hasattr(bundle, "AXUIElementCreateApplication"):
-                     _AXUIElementCreateApplication_func = bundle.AXUIElementCreateApplication
-                     logging.info("Loaded AXUIElementCreateApplication via bundle loading.")
-                elif objc.lookUpClass("AXUIElementRef") is not None: # Check if AX types are known at all
-                    # This is a C function, not a method of a class.
-                    # Signature: AXUIElementRef AXUIElementCreateApplication(pid_t pid);
-                    # AXUIElementRef -> '@', pid_t -> 'i'
-                    _AXUIElementCreateApplication_func = objc.function(
-                        name='AXUIElementCreateApplication',
-                        signature=b'@i' # Returns id (AXUIElementRef), takes int (pid_t)
-                    )
-                    logging.info("Loaded AXUIElementCreateApplication via objc.function(signature='@i').")
-                else:
+                # First try to load the bundle
+                try:
+                    bundle = objc.loadBundle("ApplicationServices", 
+                                             bundle_path=AppKit.NSBundle.bundleWithIdentifier_("com.apple.ApplicationServices").bundlePath(), 
+                                             module_globals=globals())
+                    if hasattr(bundle, "AXUIElementCreateApplication"):
+                         _AXUIElementCreateApplication_func = bundle.AXUIElementCreateApplication
+                         logging.info("Loaded AXUIElementCreateApplication via bundle loading.")
+                except Exception as bundle_ex:
+                    logging.warning(f"Failed to load ApplicationServices bundle: {bundle_ex}")
+                    
+                # If bundle loading failed, try objc.function
+                if _AXUIElementCreateApplication_func is None and hasattr(objc, 'lookUpClass'):
+                    try:
+                        if objc.lookUpClass("AXUIElementRef") is not None: # Check if AX types are known at all
+                            # This is a C function, not a method of a class.
+                            # Signature: AXUIElementRef AXUIElementCreateApplication(pid_t pid);
+                            # AXUIElementRef -> '@', pid_t -> 'i'
+                            _AXUIElementCreateApplication_func = objc.function(
+                                name='AXUIElementCreateApplication',
+                                signature=b'@i' # Returns id (AXUIElementRef), takes int (pid_t)
+                            )
+                            logging.info("Loaded AXUIElementCreateApplication via objc.function(signature='@i').")
+                    except Exception as func_ex:
+                        logging.warning(f"Failed to create function with objc.function: {func_ex}")
+                
+                # Final fallback - try to dynamically load from dlsym if all else fails
+                if _AXUIElementCreateApplication_func is None:
                     logging.error("Cannot define AXUIElementCreateApplication: PyObjC/CoreFoundation types seem unavailable or bundle load failed.")
+                    try:
+                        # Create a simpler stub function that will log errors but not crash
+                        def ax_app_stub(pid):
+                            logging.error(f"Attempted to call AXUIElementCreateApplication({pid}) but function is not available")
+                            return None
+                        _AXUIElementCreateApplication_func = ax_app_stub
+                        logging.warning("Using stub implementation for AXUIElementCreateApplication")
+                    except Exception as stub_ex:
+                        logging.error(f"Failed to create stub function: {stub_ex}")
             except Exception as e_func:
                 logging.error(f"Failed to load AXUIElementCreateApplication via bundle or objc.function: {e_func}", exc_info=True)
+                # Create a stub function as a last resort
+                def ax_app_stub(pid):
+                    logging.error(f"Attempted to call AXUIElementCreateApplication({pid}) but function is not available")
+                    return None
+                _AXUIElementCreateApplication_func = ax_app_stub
+                logging.warning("Using stub implementation for AXUIElementCreateApplication after errors")
+
+        # Check if we have accessibility API permissions
+        try:
+            if hasattr(ApplicationServices, 'AXIsProcessTrustedWithOptions'):
+                trusted = ApplicationServices.AXIsProcessTrustedWithOptions(None)
+                if trusted:
+                    logging.info("✅ Application has Accessibility API permissions")
+                else:
+                    logging.warning("⚠️ Application does NOT have Accessibility API permissions!")
+                    logging.warning("Please enable in System Preferences > Security & Privacy > Privacy > Accessibility")
+            else:
+                logging.warning("⚠️ Cannot check Accessibility permissions - AXIsProcessTrustedWithOptions not available")
+        except Exception as perm_e:
+            logging.warning(f"⚠️ Error checking Accessibility permissions: {perm_e}")
 
         HAS_PYOBJC = True
     except ImportError as e:
         logging.error(f"PyObjC framework import failed: {e}")
+        HAS_PYOBJC = False
+    except Exception as e:
+        logging.error(f"Unexpected error initializing PyObjC frameworks: {e}")
         HAS_PYOBJC = False
 else:
     HAS_PYOBJC = False
@@ -78,97 +134,234 @@ from .util import fix_windows_dpi_scaling, get_recordings_dir
 if system() == "Darwin" and HAS_PYOBJC:
     def decode_axvalue(value):
         """Decodes AXValueRef types into Python types."""
+        if value is None:
+            return None
+            
         try:
+            # Check if AXValueGetType is available
+            if not hasattr(ApplicationServices, 'AXValueGetType'):
+                logging.debug("AXValueGetType function not available")
+                return f"<AXValue decode not supported>"
+                
             # Access constants directly via our module variables
             value_type = ApplicationServices.AXValueGetType(value)
             
+            # Check if constants are available
+            constants_available = True
+            if 'kAXValueCGPointType' not in globals():
+                logging.debug("AXValue constants not available")
+                constants_available = False
+            
             # Use ctypes style byref for newer PyObjC, don't use objc.byref directly
             # as it may not exist in newer versions
-            if value_type == kAXValueCGPointType:
+            if constants_available and value_type == kAXValueCGPointType:
                 point = Quartz.CGPoint()
                 try:
-                    if hasattr(objc, 'byref'):
-                        ApplicationServices.AXValueGetValue(value, kAXValueCGPointType, objc.byref(point))
-                    else:
-                        # Alternative method for newer PyObjC
-                        ApplicationServices.AXValueGetValue(value, kAXValueCGPointType, ctypes.byref(point))
+                    # Try multiple approaches to handle different PyObjC versions
+                    try:
+                        if hasattr(objc, 'byref'):
+                            ApplicationServices.AXValueGetValue(value, kAXValueCGPointType, objc.byref(point))
+                        else:
+                            # Alternative method for newer PyObjC
+                            ApplicationServices.AXValueGetValue(value, kAXValueCGPointType, ctypes.byref(point))
+                    except TypeError:
+                        # Try without byref as a last resort
+                        point = ApplicationServices.AXValueGetValue(value, kAXValueCGPointType)
                 except Exception as e:
                     logging.error(f"Error decoding CGPoint: {e}")
-                    return "<CGPoint decode error>"
-                return {'x': point.x, 'y': point.y}
-            elif value_type == kAXValueCGSizeType:
+                    return {"x": 0, "y": 0, "error": str(e)}  # Return a valid object with error info
+                    
+                # Make sure we have valid x/y values, PyObjC might return strange objects
+                try:
+                    return {'x': float(point.x), 'y': float(point.y)}
+                except (TypeError, ValueError) as e:
+                    logging.error(f"Invalid point coordinates: {e}")
+                    return {"x": 0, "y": 0, "error": "Invalid coordinates"}
+                    
+            elif constants_available and value_type == kAXValueCGSizeType:
                 size = Quartz.CGSize()
                 try:
-                    if hasattr(objc, 'byref'):
-                        ApplicationServices.AXValueGetValue(value, kAXValueCGSizeType, objc.byref(size))
-                    else:
-                        # Alternative method for newer PyObjC
-                        ApplicationServices.AXValueGetValue(value, kAXValueCGSizeType, ctypes.byref(size))
+                    try:
+                        if hasattr(objc, 'byref'):
+                            ApplicationServices.AXValueGetValue(value, kAXValueCGSizeType, objc.byref(size))
+                        else:
+                            # Alternative method for newer PyObjC
+                            ApplicationServices.AXValueGetValue(value, kAXValueCGSizeType, ctypes.byref(size))
+                    except TypeError:
+                        # Try without byref as a last resort
+                        size = ApplicationServices.AXValueGetValue(value, kAXValueCGSizeType)
                 except Exception as e:
                     logging.error(f"Error decoding CGSize: {e}")
-                    return "<CGSize decode error>"
-                return {'width': size.width, 'height': size.height}
-            elif value_type == kAXValueCGRectType:
+                    return {"width": 0, "height": 0, "error": str(e)}
+                    
+                # Ensure valid values
+                try:
+                    return {'width': float(size.width), 'height': float(size.height)}
+                except (TypeError, ValueError):
+                    return {"width": 0, "height": 0, "error": "Invalid dimensions"}
+                    
+            elif constants_available and value_type == kAXValueCGRectType:
                 rect = Quartz.CGRect()
                 try:
-                    if hasattr(objc, 'byref'):
-                        ApplicationServices.AXValueGetValue(value, kAXValueCGRectType, objc.byref(rect))
-                    else:
-                        # Alternative method for newer PyObjC
-                        ApplicationServices.AXValueGetValue(value, kAXValueCGRectType, ctypes.byref(rect))
+                    try:
+                        if hasattr(objc, 'byref'):
+                            ApplicationServices.AXValueGetValue(value, kAXValueCGRectType, objc.byref(rect))
+                        else:
+                            # Alternative method for newer PyObjC
+                            ApplicationServices.AXValueGetValue(value, kAXValueCGRectType, ctypes.byref(rect))
+                    except TypeError:
+                        # Try without byref as a last resort
+                        rect = ApplicationServices.AXValueGetValue(value, kAXValueCGRectType)
                 except Exception as e:
                     logging.error(f"Error decoding CGRect: {e}")
-                    return "<CGRect decode error>"
-                return {'x': rect.origin.x, 'y': rect.origin.y, 'width': rect.size.width, 'height': rect.size.height}
-            elif value_type == kAXValueCFRangeType:
+                    return {"x": 0, "y": 0, "width": 0, "height": 0, "error": str(e)}
+                    
+                # Ensure valid values
+                try:
+                    return {
+                        'x': float(rect.origin.x), 
+                        'y': float(rect.origin.y), 
+                        'width': float(rect.size.width), 
+                        'height': float(rect.size.height)
+                    }
+                except (TypeError, ValueError, AttributeError):
+                    return {"x": 0, "y": 0, "width": 0, "height": 0, "error": "Invalid rectangle"}
+                    
+            elif constants_available and value_type == kAXValueCFRangeType:
                 range_val = Quartz.CFRange()
                 try:
-                    if hasattr(objc, 'byref'):
-                        ApplicationServices.AXValueGetValue(value, kAXValueCFRangeType, objc.byref(range_val))
-                    else:
-                        # Alternative method for newer PyObjC
-                        ApplicationServices.AXValueGetValue(value, kAXValueCFRangeType, ctypes.byref(range_val))
+                    try:
+                        if hasattr(objc, 'byref'):
+                            ApplicationServices.AXValueGetValue(value, kAXValueCFRangeType, objc.byref(range_val))
+                        else:
+                            # Alternative method for newer PyObjC
+                            ApplicationServices.AXValueGetValue(value, kAXValueCFRangeType, ctypes.byref(range_val))
+                    except TypeError:
+                        # Try without byref as a last resort
+                        range_val = ApplicationServices.AXValueGetValue(value, kAXValueCFRangeType)
                 except Exception as e:
                     logging.error(f"Error decoding CFRange: {e}")
-                    return "<CFRange decode error>"
-                return {'location': range_val.location, 'length': range_val.length}
+                    return {"location": 0, "length": 0, "error": str(e)}
+                    
+                # Ensure valid values
+                try:
+                    return {'location': int(range_val.location), 'length': int(range_val.length)}
+                except (TypeError, ValueError, AttributeError):
+                    return {"location": 0, "length": 0, "error": "Invalid range"}
             
+            # If we got this far, we couldn't properly decode the value
             return f"<AXValue type {value_type}>" # Fallback for unknown types
+        except AttributeError as e:
+            logging.error(f"Missing attribute for AXValue decoding: {e}")
+            return f"<AXValue attribute missing: {e}>"
         except Exception as e:
             logging.error(f"Error decoding AXValue: {e}")
             return f"<AXValue decode error: {e}>"
 
     def sanitize_for_json(obj):
         """Recursively convert known problematic types in a dict/list for JSON serialization."""
-        if isinstance(obj, dict):
-            return {k: sanitize_for_json(v) for k, v in obj.items()}
-        elif isinstance(obj, (list, tuple)):
-            return [sanitize_for_json(item) for item in obj]
-        # Add specific type conversions here as needed
-        elif hasattr(objc, 'pyobjc_unicode') and isinstance(obj, objc.pyobjc_unicode):
-            return str(obj)
-        elif hasattr(objc, 'objc_object') and isinstance(obj, objc.objc_object):
-            # Handle generic objc_object - might need more specific checks if complex
-            return str(obj) # Simple string conversion
-        elif hasattr(Foundation, 'NSDate') and isinstance(obj, Foundation.NSDate):
-            return str(obj) # Or format as ISO string etc.
-        elif hasattr(AppKit, 'NSNumber') and isinstance(obj, AppKit.NSNumber):
-            # Try to convert NSNumber types appropriately
-            try:
-                if hasattr(obj, 'boolValue'):
-                    return bool(obj.boolValue())
-                elif hasattr(obj, 'floatValue'):
-                    return float(obj.floatValue())
-                elif hasattr(obj, 'intValue'):
-                    return int(obj.intValue())
-            except:
-                pass # Ignore conversion errors, fall back to str
-            return str(obj) # Fallback
-        # Add other potential types like NSData, etc. if encountered
-        return obj # Return basic types (int, float, str, bool, None) and unknowns as is
+        if obj is None:
+            return None
+            
+        try:
+            # Handle dictionaries - recursively sanitize values
+            if isinstance(obj, dict):
+                return {str(k): sanitize_for_json(v) for k, v in obj.items()}
+                
+            # Handle lists and tuples - recursively sanitize elements
+            elif isinstance(obj, (list, tuple)):
+                return [sanitize_for_json(item) for item in obj]
+                
+            # Convert PyObjC Unicode strings to Python strings
+            elif hasattr(objc, 'pyobjc_unicode') and isinstance(obj, objc.pyobjc_unicode):
+                return str(obj)
+                
+            # Handle generic objc_object instances
+            elif hasattr(objc, 'objc_object') and isinstance(obj, objc.objc_object):
+                try:
+                    # Try to convert to JSON-serializable type
+                    if hasattr(obj, 'description'):
+                        return str(obj.description())
+                    else:
+                        return str(obj)
+                except Exception as e:
+                    logging.debug(f"Error converting objc_object to string: {e}")
+                    return f"<ObjC object: {type(obj).__name__}>"
+                    
+            # Handle NSDate objects
+            elif hasattr(Foundation, 'NSDate') and isinstance(obj, Foundation.NSDate):
+                try:
+                    # Convert to ISO format string
+                    time_interval = obj.timeIntervalSince1970()
+                    from datetime import datetime
+                    dt = datetime.fromtimestamp(time_interval)
+                    return dt.isoformat()
+                except Exception as e:
+                    logging.debug(f"Error converting NSDate: {e}")
+                    return str(obj)
+                    
+            # Handle NSNumber objects
+            elif hasattr(AppKit, 'NSNumber') and isinstance(obj, AppKit.NSNumber):
+                # Try to convert NSNumber types appropriately based on their type
+                try:
+                    if hasattr(obj, 'boolValue'):
+                        return bool(obj.boolValue())
+                    elif hasattr(obj, 'floatValue'):
+                        return float(obj.floatValue())
+                    elif hasattr(obj, 'intValue'):
+                        return int(obj.intValue())
+                    else:
+                        return str(obj)
+                except Exception as e:
+                    logging.debug(f"Error converting NSNumber: {e}")
+                    return str(obj)
+                    
+            # Handle NSArray/NSMutableArray
+            elif hasattr(Foundation, 'NSArray') and isinstance(obj, Foundation.NSArray):
+                return [sanitize_for_json(obj.objectAtIndex_(i)) for i in range(obj.count())]
+                
+            # Handle NSDictionary/NSMutableDictionary
+            elif hasattr(Foundation, 'NSDictionary') and isinstance(obj, Foundation.NSDictionary):
+                result = {}
+                keys = obj.allKeys()
+                for i in range(keys.count()):
+                    key = keys.objectAtIndex_(i)
+                    key_str = str(key)
+                    val = obj.objectForKey_(key)
+                    result[key_str] = sanitize_for_json(val)
+                return result
+                
+            # Handle NSData by converting to Base64
+            elif hasattr(Foundation, 'NSData') and isinstance(obj, Foundation.NSData):
+                try:
+                    # Convert NSData to base64 string
+                    base64_data = obj.base64EncodedStringWithOptions_(0)
+                    return f"<base64data:{base64_data}>"
+                except Exception as e:
+                    logging.debug(f"Error converting NSData: {e}")
+                    return "<NSData object>"
+                    
+            # Special case for UI elements that might have circular references
+            elif hasattr(obj, '_as_parameter_') and str(type(obj)).find('UI') >= 0:
+                return f"<UI element: {type(obj).__name__}>"
+                
+            # For basic types (int, float, str, bool, None) just return as is
+            elif isinstance(obj, (int, float, str, bool, type(None))):
+                return obj
+                
+            # Any other type - convert to string
+            else:
+                return str(obj)
+                
+        except Exception as e:
+            logging.error(f"Error in sanitize_for_json: {e}")
+            return f"<Error sanitizing {type(obj).__name__}: {str(e)}>"
 
     def get_element_info(element):
         """Recursively get information about an AXUIElement and its children."""
+        if not element:
+            return {}
+            
         info = {}
         attributes = [
             ApplicationServices.kAXRoleAttribute, 
@@ -178,7 +371,15 @@ if system() == "Darwin" and HAS_PYOBJC:
             ApplicationServices.kAXValueAttribute
         ]
         
+        # Make sure we have all attributes - if any are missing, skip them
+        available_attributes = []
         for attr in attributes:
+            if attr is None or not hasattr(ApplicationServices, attr.replace('kAX', '').replace('Attribute', '')):
+                logging.debug(f"Skipping unavailable attribute: {attr}")
+                continue
+            available_attributes.append(attr)
+        
+        for attr in available_attributes:
             try:
                 # Use AXUIElementCopyAttributeValue with error checking
                 result, value = ApplicationServices.AXUIElementCopyAttributeValue(element, attr, None)
@@ -189,7 +390,11 @@ if system() == "Darwin" and HAS_PYOBJC:
                             info[attr.replace('kAX', '').replace('Attribute', '')] = decode_axvalue(value)
                         except Exception as e:
                             logging.debug(f"Failed to decode AXValue for {attr}: {e}")
-                            info[attr.replace('kAX', '').replace('Attribute', '')] = str(value)
+                            # Use a safe string representation instead of failing
+                            try:
+                                info[attr.replace('kAX', '').replace('Attribute', '')] = str(value)
+                            except:
+                                info[attr.replace('kAX', '').replace('Attribute', '')] = "<decode error>"
                     elif isinstance(value, (list, tuple)):
                         child_elements = []
                         for el in value:
@@ -198,6 +403,8 @@ if system() == "Darwin" and HAS_PYOBJC:
                                     child_elements.append(get_element_info(el))
                                 except Exception as nested_e:
                                     logging.debug(f"Error processing child element: {nested_e}")
+                                    # Add a placeholder instead of failing
+                                    child_elements.append({"error": str(nested_e)})
                             else:
                                 child_elements.append(el)
                         if child_elements:
@@ -206,23 +413,44 @@ if system() == "Darwin" and HAS_PYOBJC:
                             info[attr.replace('kAX', '').replace('Attribute', '')] = value
                     else:
                         info[attr.replace('kAX', '').replace('Attribute', '')] = value
+            except AttributeError as e:
+                # If the attribute itself is missing from ApplicationServices, just skip it
+                logging.debug(f"Attribute {attr} not available in ApplicationServices: {e}")
             except Exception as e:
                 logging.debug(f"Error getting attribute {attr}: {e}")
+                # Don't fail completely, just note the error and continue
+                info[f"error_{attr.replace('kAX', '').replace('Attribute', '')}"] = str(e)
 
-        # Get children recursively
+        # Get children recursively with better error handling
         try:
-            result_children, children = ApplicationServices.AXUIElementCopyAttributeValue(element, ApplicationServices.kAXChildrenAttribute, None)
-            if result_children == 0 and children:  # kAXErrorSuccess is 0
-                info['Children'] = []
-                for child in children:
-                    try:
-                        child_info = get_element_info(child)
-                        if child_info:
-                            info['Children'].append(child_info)
-                    except Exception as child_e:
-                        logging.debug(f"Error processing child: {child_e}")
+            if hasattr(ApplicationServices, 'kAXChildrenAttribute'):
+                try:
+                    result_children, children = ApplicationServices.AXUIElementCopyAttributeValue(element, ApplicationServices.kAXChildrenAttribute, None)
+                    if result_children == 0 and children:  # kAXErrorSuccess is 0
+                        info['Children'] = []
+                        # Limit recursion depth and number of children to avoid huge trees
+                        max_children = 50  # Reasonable limit to prevent excessive trees
+                        for i, child in enumerate(children[:max_children]):
+                            try:
+                                child_info = get_element_info(child)
+                                if child_info:
+                                    info['Children'].append(child_info)
+                            except Exception as child_e:
+                                logging.debug(f"Error processing child {i}: {child_e}")
+                                # Include error info instead of failing
+                                info['Children'].append({"error": f"Child processing error: {str(child_e)}"})
+                        
+                        # If we limited the children, note that fact
+                        if len(children) > max_children:
+                            info['Children'].append({"note": f"Limited to {max_children} of {len(children)} children"})
+                except Exception as children_e:
+                    logging.debug(f"Error getting children attribute: {children_e}")
+                    info['Children_error'] = str(children_e)
+        except AttributeError:
+            logging.debug("kAXChildrenAttribute not available")
         except Exception as e:
             logging.debug(f"Error getting children: {e}")
+            info['Children_error'] = str(e)
 
         return info
 
@@ -255,47 +483,102 @@ if system() == "Darwin" and HAS_PYOBJC:
             # No need to bridge with objc.objc_object(c_void_p=...) if _AXUIElementCreateApplication_func 
             # is a proper PyObjC function (either direct or via objc.function), as it should return a PyObjC object.
 
-            # Get focused window
-            result, focused_window = ApplicationServices.AXUIElementCopyAttributeValue(
-                app_element, 
-                ApplicationServices.kAXFocusedWindowAttribute, 
-                None
-            )
-            
-            if result != 0 or not focused_window:  # kAXErrorSuccess is 0
-                logging.debug(f"Could not get focused window (result={result}), trying to get any window")
-                # Fallback: Try getting the first window from the list
-                result_windows, windows = ApplicationServices.AXUIElementCopyAttributeValue(
-                    app_element, 
-                    ApplicationServices.kAXWindowsAttribute, 
-                    None
-                )
-                
-                if result_windows == 0 and windows and len(windows) > 0:
-                    focused_window = windows[0]
-                    logging.debug("Using first window from list as fallback.")
+            # Get focused window - use try/except for each API call to handle PyObjC binding issues
+            focused_window = None
+            try:
+                # Only attempt this if the constants are available
+                if hasattr(ApplicationServices, 'kAXFocusedWindowAttribute'):
+                    result, focused_window = ApplicationServices.AXUIElementCopyAttributeValue(
+                        app_element, 
+                        ApplicationServices.kAXFocusedWindowAttribute, 
+                        None
+                    )
+                    
+                    if result != 0 or not focused_window:  # kAXErrorSuccess is 0
+                        logging.debug(f"Could not get focused window (result={result}), trying to get any window")
+                        focused_window = None
                 else:
-                    logging.warning(f"Accessibility Capture: Could not get focused or any window for app {app_name}.")
-                    return None  # No window found
+                    logging.warning("kAXFocusedWindowAttribute not available, falling back to windows list")
+            except (AttributeError, ValueError, TypeError) as e:
+                logging.warning(f"Error accessing focused window attribute: {e}")
+                focused_window = None
+            except Exception as e:
+                logging.warning(f"Unexpected error getting focused window: {e}")
+                focused_window = None
+            
+            # If focused window failed, try getting any window
+            if not focused_window:
+                try:
+                    # Only attempt this if the constants are available
+                    if hasattr(ApplicationServices, 'kAXWindowsAttribute'):
+                        result_windows, windows = ApplicationServices.AXUIElementCopyAttributeValue(
+                            app_element, 
+                            ApplicationServices.kAXWindowsAttribute, 
+                            None
+                        )
+                        
+                        if result_windows == 0 and windows and len(windows) > 0:
+                            focused_window = windows[0]
+                            logging.debug("Using first window from list as fallback.")
+                except (AttributeError, ValueError, TypeError) as e:
+                    logging.warning(f"Error accessing windows attribute: {e}")
+                except Exception as e:
+                    logging.warning(f"Unexpected error getting window list: {e}")
+            
+            if not focused_window:
+                # Last resort: try to create a simple representation of the application
+                logging.warning(f"Accessibility Capture: Could not get any windows for app {app_name}.")
+                return {
+                    "application": app_name,
+                    "pid": pid,
+                    "error": "No accessible windows found",
+                    "timestamp": datetime.now().isoformat()
+                }
 
-            logging.debug("Starting to build accessibility tree...")
-            tree = get_element_info(focused_window)
-            if not tree:
-                logging.warning("Generated empty accessibility tree")
-                return None
+            # Use a safer version of get_element_info with better error handling
+            try:
+                logging.debug("Starting to build accessibility tree...")
+                tree = get_element_info(focused_window)
+                if not tree:
+                    logging.warning("Generated empty accessibility tree")
+                    return {
+                        "application": app_name,
+                        "pid": pid,
+                        "window": "Unknown",
+                        "error": "Empty accessibility tree",
+                        "timestamp": datetime.now().isoformat()
+                    }
 
-            # Sanitize the tree before returning
-            sanitized_tree = sanitize_for_json(tree)
-            if not sanitized_tree:
-                logging.warning("Sanitized accessibility tree is empty")
-                return None
-                
-            logging.debug(f"Successfully captured accessibility tree for {app_name}")
-            return sanitized_tree
+                # Sanitize the tree before returning
+                sanitized_tree = sanitize_for_json(tree)
+                if not sanitized_tree:
+                    logging.warning("Sanitized accessibility tree is empty")
+                    return {
+                        "application": app_name,
+                        "pid": pid,
+                        "window": "Unknown",
+                        "error": "Empty sanitized tree",
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    
+                logging.debug(f"Successfully captured accessibility tree for {app_name}")
+                return sanitized_tree
+            except Exception as tree_e:
+                logging.error(f"Error building accessibility tree: {tree_e}")
+                return {
+                    "application": app_name,
+                    "pid": pid,
+                    "error": f"Tree building failed: {str(tree_e)}",
+                    "timestamp": datetime.now().isoformat()
+                }
 
         except Exception as e:
             logging.error(f"Error capturing macOS accessibility tree: {e}", exc_info=True)
-            return None
+            # Return a minimal fallback that's valid JSON but indicates the error
+            return {
+                "error": f"Accessibility capture failed: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }
 else:
     # Provide a dummy function if not on macOS or Accessibility fails
     def capture_macos_accessibility_tree():
