@@ -176,16 +176,26 @@ class MainInterface(QWidget):
     def on_browser_launched(self, browser_key, port, success):
         """Handle browser launch event"""
         if success:
+            browser_name = {
+                'chrome': 'Google Chrome',
+                'edge': 'Microsoft Edge',
+                'brave': 'Brave Browser',
+                'chromium': 'Chromium'
+            }.get(browser_key, browser_key.capitalize())
+            
             QMessageBox.information(
                 self,
-                "Browser Launched",
-                f"Browser launched successfully with debugging enabled on port {port}.\n\n"
-                f"You can now start recording and DOM snapshots will be captured when this browser is in focus."
+                "Browser Connection Successful",
+                f"{browser_name} is now connected with debugging enabled on port {port}.\n\n"
+                f"When you start recording and interact with {browser_name}:\n"
+                f"• DOM snapshots will be captured when you click or press key combinations\n"
+                f"• These snapshots will be saved in the recording's 'dom_snaps' folder\n"
+                f"• You can use any website during recording - all interactions will be captured\n\n"
+                f"Ready to start recording with DOM capture!"
             )
             
-            # Start recording automatically if specified
-            # if auto_start_recording:
-            #     self.toggle_record()
+            # Highlight the record button to suggest next step
+            self.toggle_record_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; }")
         # No need to handle failure, the dialog already shows an error message
 
     @pyqtSlot()

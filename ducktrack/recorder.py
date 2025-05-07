@@ -12,6 +12,10 @@ from pychrome.exceptions import TimeoutException
 import requests.exceptions
 import websocket # For websocket specific exceptions
 import socket # For port scanning
+import hashlib
+import filelock # Add filelock for thread safety
+import tempfile
+import threading
 
 from pynput import keyboard, mouse
 from pynput.keyboard import KeyCode
@@ -20,21 +24,45 @@ from PyQt6.QtCore import QThread, pyqtSignal, pyqtSlot
 # Import PyObjC and framework modules conditionally for macOS
 if system() == "Darwin":
     try:
-        # Import top-level frameworks
         import objc
         import AppKit
         import Foundation
         import Quartz
         import ApplicationServices
-        
-        # For better compatibility, we'll use constants directly from ApplicationServices
-        # as confirmed by our test script
+        # ctypes and find_library are not needed for this revised approach
+
         kAXValueCGPointType = ApplicationServices.kAXValueCGPointType
         kAXValueCGSizeType = ApplicationServices.kAXValueCGSizeType
         kAXValueCGRectType = ApplicationServices.kAXValueCGRectType
         kAXValueCFRangeType = ApplicationServices.kAXValueCFRangeType
-        
-        # Track successful import
+
+        _AXUIElementCreateApplication_func = None
+        if hasattr(ApplicationServices, 'AXUIElementCreateApplication'):
+            _AXUIElementCreateApplication_func = ApplicationServices.AXUIElementCreateApplication
+            logging.info("Using ApplicationServices.AXUIElementCreateApplication directly.")
+        else:
+            logging.warning("AXUIElementCreateApplication not found directly on ApplicationServices. Trying bundle load then objc.function.")
+            try:
+                bundle = objc.loadBundle("ApplicationServices", 
+                                         bundle_path=AppKit.NSBundle.bundleWithIdentifier_("com.apple.ApplicationServices").bundlePath(), 
+                                         module_globals=globals())
+                if hasattr(bundle, "AXUIElementCreateApplication"):
+                     _AXUIElementCreateApplication_func = bundle.AXUIElementCreateApplication
+                     logging.info("Loaded AXUIElementCreateApplication via bundle loading.")
+                elif objc.lookUpClass("AXUIElementRef") is not None: # Check if AX types are known at all
+                    # This is a C function, not a method of a class.
+                    # Signature: AXUIElementRef AXUIElementCreateApplication(pid_t pid);
+                    # AXUIElementRef -> '@', pid_t -> 'i'
+                    _AXUIElementCreateApplication_func = objc.function(
+                        name='AXUIElementCreateApplication',
+                        signature=b'@i' # Returns id (AXUIElementRef), takes int (pid_t)
+                    )
+                    logging.info("Loaded AXUIElementCreateApplication via objc.function(signature='@i').")
+                else:
+                    logging.error("Cannot define AXUIElementCreateApplication: PyObjC/CoreFoundation types seem unavailable or bundle load failed.")
+            except Exception as e_func:
+                logging.error(f"Failed to load AXUIElementCreateApplication via bundle or objc.function: {e_func}", exc_info=True)
+
         HAS_PYOBJC = True
     except ImportError as e:
         logging.error(f"PyObjC framework import failed: {e}")
@@ -211,11 +239,21 @@ if system() == "Darwin" and HAS_PYOBJC:
             pid = active_app.processIdentifier()
             app_name = active_app.localizedName()
             logging.debug(f"Active app: {app_name} (PID: {pid})")
-            app_element = ApplicationServices.AXUIElementCreateApplication(pid)
-
-            if not app_element:
-                logging.warning(f"Accessibility Capture: AXUIElementCreateApplication failed for PID {pid}.")
+            
+            if not _AXUIElementCreateApplication_func:
+                logging.error("AXUIElementCreateApplication function is not available (remained None). Cannot get app element.")
                 return None
+            
+            # Call the function (it's either a direct PyObjC function or one defined by objc.function)
+            app_element = _AXUIElementCreateApplication_func(pid)
+            
+            if not app_element:
+                # If app_element is None (e.g. from objc.NULL or if the function returned null legitimately)
+                logging.warning(f"AXUIElementCreateApplication returned null or an equivalent for PID {pid}.")
+                return None
+
+            # No need to bridge with objc.objc_object(c_void_p=...) if _AXUIElementCreateApplication_func 
+            # is a proper PyObjC function (either direct or via objc.function), as it should return a PyObjC object.
 
             # Get focused window
             result, focused_window = ApplicationServices.AXUIElementCopyAttributeValue(
@@ -279,17 +317,61 @@ CHROMIUM_BUNDLE_IDS = {
     # Add others as needed
 }
 
-# Keys that should trigger DOM capture (besides clicks and modifier changes)
-# Using a set for efficient lookup. Includes common command/navigation keys.
+# Keys that should trigger DOM capture
 DOM_CAPTURE_KEYS = {
-    'enter', 'tab', 'backspace', 'delete', # delete might be fn+backspace
+    'enter', 'tab', 'backspace', 'delete',
     'esc', 'space', 
-    'left', 'right', 'up', 'down', # Arrow keys
-    'pageup', 'pagedown', 'home', 'end', # Navigation
-    # Add modifier keys
-    'shift', 'ctrl', 'alt', 'cmd', 'control', 'option', 'command',
-    # Add function keys (F1-F12) if desired: 'f1', 'f2', ...
+    'left', 'right', 'up', 'down',
+    'pageup', 'pagedown', 'home', 'end',
+    'shift', 'ctrl', 'alt', 'cmd',
 }
+
+# Keys that should trigger accessibility tree captures
+A11Y_CAPTURE_KEYS = {
+    'enter', 'tab', 'backspace', 'delete',
+    'esc', 'space', 
+    'left', 'right', 'up', 'down',
+    'pageup', 'pagedown', 'home', 'end',
+    'shift', 'ctrl', 'alt', 'cmd',
+}
+
+# Minimum interval between captures to avoid duplicates
+MIN_A11Y_CAPTURE_INTERVAL = 2.0  # Changed from 3.0 to match DOM interval
+MIN_DOM_CAPTURE_INTERVAL = 2.0  # Reduced from 3.0 (previously 5.0)
+
+# URL monitoring
+PAGE_CHECK_INTERVAL = 2.0
+PERIODIC_CAPTURE_INTERVAL = 30.0
+
+# Page loading verification - RESTORED TO PREVIOUS WORKING VALUES
+PAGE_LOAD_MIN_MHTML_SIZE = 500       # Reduced from 50_000 to accept even small placeholders
+PAGE_LOAD_MIN_HTML_CONTENT_SIZE = 500  # Min documentElement.outerHTML.length
+PAGE_LOAD_TIMEOUT = 15.0                # Max seconds for entire smart capture process
+PAGE_LOAD_ATTEMPTS = 3
+PAGE_LOAD_DELAY = 1.0                   # Reduced from 2.0 seconds (was too long)
+
+# Content stability check parameters - RELAXED
+PAGE_LOAD_STABILITY_ATTEMPTS = 1        # Reduced from 2
+PAGE_LOAD_STABILITY_DELAY = 0.5         # Reduced from 1.0 second
+PAGE_LOAD_STABILITY_THRESHOLD = 1.5     # Increased from 1.1 (more forgiving)
+
+# Deduplication capacity
+RECENT_DOM_HASH_CAPACITY = 30
+RECENT_A11Y_HASH_CAPACITY = 20
+RECENT_HTML_FALLBACK_HASH_CAPACITY = 15 # For HTML fallbacks
+
+# Flag to prevent creating folders during shutdown
+SHUTDOWN_IN_PROGRESS = False
+
+# Add a constant for minimum DOM size
+MIN_DOM_CONTENT_SIZE = 500  # Minimum size in bytes to consider a DOM valid
+
+# Add a fixed version of pychrome's Tab class to handle empty messages properly
+# Keep a reference to the original _recv_loop method
+original_tab_recv_loop = pychrome.Tab._recv_loop
+
+# We'll revert to a simpler approach without modifying pychrome's internals
+pychrome.Tab._recv_loop = original_tab_recv_loop
 
 class Recorder(QThread):
     """
@@ -321,6 +403,10 @@ class Recorder(QThread):
         self.focused_pid = None
         self.capture_data_path = None # Path for both a11y trees and DOM snaps
         
+        # Timestamp tracking for throttling captures
+        self.last_a11y_capture_time = 0
+        self.last_dom_capture_time = 0
+        
         logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
         
         # Initialize managers later in run() or ensure thread safety if needed earlier
@@ -329,6 +415,7 @@ class Recorder(QThread):
 
         # Listeners setup
         # Listeners are initialized here but started in run()
+        logging.info("Initializing mouse listener with on_click, on_move, and on_scroll handlers")
         self.mouse_listener = mouse.Listener(
             on_move=self.on_move,
             on_click=self.on_click,
@@ -346,6 +433,29 @@ class Recorder(QThread):
             logging.info("Will use AppKit for macOS keyboard events.")
 
         self.macos_key_monitor = None # Holder for the NSEvent monitor
+        self.macos_mouse_monitor = None # Holder for potential macOS-specific mouse monitor
+
+        # Add tracking for current browser URL to detect page changes
+        self.current_browser_url = None
+        self.last_browser_url = None
+        self.url_check_timer = None
+        self.periodic_capture_timer = None
+        self.background_workers = []
+        
+        # Add tracking for window focus to better detect switches
+        self.current_window_id = None
+        self.last_window_id = None
+        
+        # Add tracking of recent DOM hashes to avoid duplicates
+        self.recent_dom_hashes = []
+        # Add tracking of recent a11y tree hashes to avoid duplicates
+        self.recent_a11y_hashes = []
+        self.recent_html_fallback_hashes = [] # For deduplicating HTML fallbacks
+
+        # Add lock for DOM capture critical sections
+        self.dom_capture_lock = threading.Lock()
+        # Add lock for a11y capture critical sections (good practice, though less contention expected)
+        self.a11y_capture_lock = threading.Lock()
 
     def on_move(self, x, y):
         if not self._is_paused:
@@ -355,61 +465,82 @@ class Recorder(QThread):
                                   "y": y}, block=False)
         
     def on_click(self, x, y, button, pressed):
+        """Process mouse click events and capture DOM/accessibility data"""
         if not self._is_paused:
+            logging.info(f"Mouse {'press' if pressed else 'release'} detected at ({x},{y}) - button: {button.name}")
+            
             if pressed:
                 self.mouse_buttons_pressed.add(button)
             else:
                 self.mouse_buttons_pressed.discard(button)
 
-            # Capture accessibility tree on macOS
-            accessibility_tree_path = None
-            if system() == "Darwin" and HAS_PYOBJC and self.capture_data_path:
-                logging.debug(f"Mouse {'press' if pressed else 'release'} at ({x},{y}), attempting to capture accessibility tree...")
-                tree = capture_macos_accessibility_tree()
-                if tree:
-                    timestamp = time.perf_counter()
-                    filename = f"a11y_click_{timestamp:.6f}.json"
-                    filepath = os.path.join(self.capture_data_path, filename)
-                    try:
-                        with open(filepath, 'w') as f:
-                            json.dump(tree, f, indent=2)
-                        logging.info(f"Accessibility tree saved to: {filepath}")
-                        accessibility_tree_path = filepath
-                    except Exception as e:
-                        logging.error(f"Error saving accessibility tree to {filepath}: {e}", exc_info=True)
-                else:
-                    logging.warning("Failed to capture accessibility tree on click")
+            # Only process captures for mouse press events (not releases) to reduce redundant captures
+            # Include BOTH left AND right clicks for captures
+            if pressed and (button.name == 'left' or button.name == 'right') and self.capture_data_path:
+                # Capture accessibility tree on macOS with less strict throttling for clicks
+                accessibility_tree_path = None
+                if system() == "Darwin" and HAS_PYOBJC:
+                    with self.a11y_capture_lock: # Protect a11y capture timing and hash list
+                        current_time = time.perf_counter()
+                        # Always try to capture for mouse clicks, with minimal time restriction
+                        if current_time - self.last_a11y_capture_time >= 1.0:  # Reduced from 3.0
+                            logging.info(f"Capturing accessibility tree for {button.name} mouse press at ({x},{y})")
+                            tree = capture_macos_accessibility_tree()
+                            if tree:
+                                tree_str = json.dumps(tree) # Serialize once for hashing and saving
+                                tree_hash = hashlib.md5(tree_str.encode()).hexdigest()
+                                
+                                if tree_hash in self.recent_a11y_hashes:
+                                    logging.info(f"Skipping duplicate a11y tree (hash: {tree_hash[:8]})")
+                                else:
+                                    self.recent_a11y_hashes.append(tree_hash)
+                                    if len(self.recent_a11y_hashes) > RECENT_A11Y_HASH_CAPACITY:
+                                        self.recent_a11y_hashes.pop(0)
+                                        
+                                    self.last_a11y_capture_time = current_time # Update time for successful, new capture
+                                    filename = f"a11y_{button.name}_click_{current_time:.6f}.json" # Include button name
+                                    filepath = os.path.join(self.capture_data_path, filename)
+                                    try:
+                                        with open(filepath, 'w') as f:
+                                            # Use the already serialized tree_str for efficiency if json.dump can take it,
+                                            # otherwise, dump the original tree object. For now, dump original.
+                                            json.dump(tree, f, indent=2) 
+                                        logging.info(f"Accessibility tree saved: {filepath}")
+                                        accessibility_tree_path = filepath
+                                    except Exception as e:
+                                        logging.error(f"Error saving accessibility tree: {e}", exc_info=True)
+                            else:
+                                logging.error(f"Failed to capture accessibility tree on {button.name} click")
+                        else:
+                            logging.info(f"Skipped a11y capture due to rate limit: {current_time - self.last_a11y_capture_time:.2f}s < 1.0s")
 
-            # Capture DOM snapshot if Chromium is focused
-            dom_snapshot_path = None
-            if self.is_chromium_focused and self.capture_data_path:
-                logging.debug(f"Mouse {'press' if pressed else 'release'} in Chromium app (PID: {self.focused_pid}), attempting DOM snapshot...")
-                snapshot_mhtml = capture_chromium_dom_snapshot() # Using default port 9222
-                if snapshot_mhtml:
-                    timestamp = time.perf_counter()
-                    filename = f"dom_click_{timestamp:.6f}.mhtml"
-                    filepath = os.path.join(self.capture_data_path, filename)
-                    try:
-                        with open(filepath, 'w', encoding='utf-8') as f:
-                            f.write(snapshot_mhtml)
-                        logging.info(f"DOM snapshot saved to: {filepath}")
-                        dom_snapshot_path = filepath
-                    except Exception as e:
-                        logging.error(f"Error saving DOM snapshot: {e}", exc_info=True)
-                else:
-                    logging.warning("Failed to capture DOM snapshot on click")
-                    logging.info("Make sure Chrome is running with --remote-debugging-port=9222")
+                # Capture DOM snapshot for button PRESS events in Chromium apps
+                # with less throttling (always try to capture for user clicks)
+                dom_snapshot_path = None
+                if self.is_chromium_focused:
+                    logging.info(f"{button.name.capitalize()} mouse press in Chromium app, queueing smart DOM capture.")
+                    # _smart_dom_capture itself is now thread-safe with its internal lock
+                    dom_snapshot_path = self._smart_dom_capture(
+                        url=self.current_browser_url or "unknown",
+                        title=f"{button.name}_click", # Button-specific title
+                        capture_type="click",
+                        x=x, y=y, button=button.name
+                    )
+                    if dom_snapshot_path:
+                        logging.info(f"Smart DOM capture for {button.name} click completed and saved: {dom_snapshot_path}")
+                    else:
+                        logging.info(f"Smart DOM capture for {button.name} click did not result in a saved snapshot.")
 
-            self.event_queue.put({
-                "time_stamp": time.perf_counter(),
-                "action": "click",
-                "x": x,
-                "y": y,
-                "button": button.name,
-                "pressed": pressed,
-                "accessibility_tree": accessibility_tree_path,
-                "dom_snapshot": dom_snapshot_path
-            }, block=False)
+            # Create and queue click event
+            click_event = {
+                "time_stamp": time.perf_counter(), # Use fresh timestamp for the event itself
+                "action": "click", "x": x, "y": y, "button": button.name, "pressed": pressed,
+                "accessibility_tree": accessibility_tree_path if pressed and (button.name == 'left' or button.name == 'right') else None,
+                "dom_snapshot": dom_snapshot_path if pressed and (button.name == 'left' or button.name == 'right') else None
+            }
+            
+            self.event_queue.put(click_event, block=False)
+            logging.info(f"Click event queued: {click_event['action']} at ({x},{y})")
         
     def on_scroll(self, x, y, dx, dy):
         if not self._is_paused:
@@ -422,97 +553,32 @@ class Recorder(QThread):
     
     def on_press(self, key):
         if not self._is_paused:
-            # Capture accessibility tree on macOS
-            accessibility_tree_path = None
-            if system() == "Darwin" and self.capture_data_path:
-                tree = capture_macos_accessibility_tree()
-                if tree:
-                    timestamp = time.perf_counter()
-                    filename = f"a11y_keypress_{timestamp:.6f}.json"
-                    filepath = os.path.join(self.capture_data_path, filename)
-                    logging.debug(f"Attempting to save accessibility tree to: {filepath}")
-                    try:
-                        with open(filepath, 'w') as f:
-                            json.dump(tree, f, indent=2)
-                        logging.debug(f"Successfully saved accessibility tree: {filepath}")
-                        accessibility_tree_path = filepath
-                    except Exception as e:
-                        logging.error(f"Error saving accessibility tree to {filepath}: {e}", exc_info=True)
-
-            # Capture DOM snapshot if Chromium is focused and key is relevant
-            dom_snapshot_path = None
-            key_name = key.char if type(key) == KeyCode else key.name
-            if self.is_chromium_focused and self.capture_data_path and key_name in DOM_CAPTURE_KEYS:
-                snapshot_mhtml = capture_chromium_dom_snapshot()
-                if snapshot_mhtml:
-                    timestamp = time.perf_counter()
-                    filename = f"dom_keypress_{key_name}_{timestamp:.6f}.mhtml"
-                    filepath = os.path.join(self.capture_data_path, filename)
-                    try:
-                        with open(filepath, 'w', encoding='utf-8') as f:
-                            f.write(snapshot_mhtml)
-                        dom_snapshot_path = filepath
-                    except Exception as e:
-                        logging.error(f"Error saving DOM snapshot: {e}")
-
-            self.event_queue.put({
-                "time_stamp": time.perf_counter(),
-                "action": "press",
-                "name": key.char if type(key) == KeyCode else key.name,
-                "accessibility_tree": accessibility_tree_path,
-                "dom_snapshot": dom_snapshot_path
-            }, block=False)
+            self.event_queue.put({"time_stamp": time.perf_counter(), 
+                                  "action": "press", 
+                                  "name": key.char if type(key) == KeyCode else key.name}, block=False)
 
     def on_release(self, key):
         if not self._is_paused:
-            # We might not need to capture on release, but doing it for consistency for now.
-            # Consider removing if it generates too much redundant data.
-            accessibility_tree_path = None
-            if system() == "Darwin" and self.capture_data_path:
-                tree = capture_macos_accessibility_tree()
-                if tree:
-                    timestamp = time.perf_counter()
-                    filename = f"a11y_keyrelease_{timestamp:.6f}.json"
-                    filepath = os.path.join(self.capture_data_path, filename)
-                    logging.debug(f"Attempting to save accessibility tree to: {filepath}")
-                    try:
-                        with open(filepath, 'w') as f:
-                            json.dump(tree, f, indent=2)
-                        logging.debug(f"Successfully saved accessibility tree: {filepath}")
-                        accessibility_tree_path = filepath
-                    except Exception as e:
-                        logging.error(f"Error saving accessibility tree to {filepath}: {e}", exc_info=True)
-
-            # Capture DOM snapshot if Chromium is focused and key is relevant
-            dom_snapshot_path = None
-            key_name = key.char if type(key) == KeyCode else key.name
-            if self.is_chromium_focused and self.capture_data_path and key_name in DOM_CAPTURE_KEYS:
-                snapshot_mhtml = capture_chromium_dom_snapshot()
-                if snapshot_mhtml:
-                    timestamp = time.perf_counter()
-                    filename = f"dom_keyrelease_{key_name}_{timestamp:.6f}.mhtml"
-                    filepath = os.path.join(self.capture_data_path, filename)
-                    try:
-                        with open(filepath, 'w', encoding='utf-8') as f:
-                            f.write(snapshot_mhtml)
-                        dom_snapshot_path = filepath
-                    except Exception as e:
-                        logging.error(f"Error saving DOM snapshot: {e}")
-
-            self.event_queue.put({
-                "time_stamp": time.perf_counter(),
-                "action": "release",
-                "name": key.char if type(key) == KeyCode else key.name,
-                "accessibility_tree": accessibility_tree_path,
-                "dom_snapshot": dom_snapshot_path
-            }, block=False)
+            self.event_queue.put({"time_stamp": time.perf_counter(), 
+                                  "action": "release", 
+                                  "name": key.char if type(key) == KeyCode else key.name}, block=False)
     
     def run(self):
         self._is_recording = True
         self._is_paused = False
         self.mouse_buttons_pressed.clear()
         self.macos_key_monitor = None # Ensure monitor is reset
+        self.macos_mouse_monitor = None # Ensure monitor is reset
         self.capture_data_path = None # Initialize path for captures
+        self.recent_dom_hashes = [] # Initialize empty list of DOM hashes
+        self.recent_a11y_hashes = [] # Initialize empty list of a11y tree hashes
+        self.recent_html_fallback_hashes = [] # Initialize HTML fallback hash list
+        
+        # Reset URL tracking
+        self.current_browser_url = None
+        self.last_browser_url = None
+        self.current_window_id = None
+        self.last_window_id = None
 
         try:
             self.events_file = open(os.path.join(self.recording_path, "events.jsonl"), "a")
@@ -555,10 +621,68 @@ class Recorder(QThread):
             self.metadata_manager.collect()
 
             logging.debug("Starting input listeners/monitors...")
+            
+            # Explicitly log mouse/keyboard listener info
+            logging.info("Starting mouse listener for click, move, and scroll events")
+            
+            # ON MACOS: Also add a supplementary monitor for mouse events using AppKit
+            # This gives us redundancy in case pynput misses some events
+            if system() == "Darwin" and HAS_PYOBJC:
+                logging.info("Setting up additional AppKit mouse monitor for redundancy")
+                try:
+                    # Move SyntheticButton class definition outside the event handler
+                    class SyntheticButton:
+                        def __init__(self, name):
+                            self.name = name
+                            
+                    # Define mouse event handler that works with AppKit NSEvents
+                    def macos_mouse_handler_wrapper(event):
+                        try:
+                            event_type = event.type()
+                            
+                            # Handle left mouse down/up events (primaryMouseUp/Down = 1/2)
+                            if event_type == AppKit.NSEventTypeLeftMouseDown:
+                                location = event.locationInWindow()
+                                x, y = location.x, location.y
+                                logging.info(f"AppKit detected mouse down at ({x},{y})")
+                                # Create a synthetic mouse object with a name property for our handler
+                                button = SyntheticButton("left")
+                                # Call our regular handler (will handle DOM capture)
+                                self.on_click(x, y, button, True)
+                            elif event_type == AppKit.NSEventTypeLeftMouseUp:
+                                location = event.locationInWindow()
+                                x, y = location.x, location.y
+                                logging.info(f"AppKit detected mouse up at ({x},{y})")
+                                button = SyntheticButton("left")
+                                self.on_click(x, y, button, False)
+                            # We could also handle other mouse events like right click here
+                        except Exception as e:
+                            logging.error(f"Error in AppKit mouse handler: {e}")
+                        return event
+                    
+                    # Add a global monitor for mouse events
+                    event_mask = (
+                        AppKit.NSEventMaskLeftMouseDown | 
+                        AppKit.NSEventMaskLeftMouseUp | 
+                        AppKit.NSEventMaskRightMouseDown | 
+                        AppKit.NSEventMaskRightMouseUp
+                    )
+                    self.macos_mouse_monitor = AppKit.NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+                        event_mask,
+                        macos_mouse_handler_wrapper
+                    )
+                    logging.info("AppKit mouse monitor created successfully")
+                except Exception as e:
+                    logging.error(f"Failed to create AppKit mouse monitor: {e}")
+            
+            # Start standard pynput mouse listener (works on all platforms)
             self.mouse_listener.start()
+            logging.info("Mouse listener started successfully")
 
             if self.keyboard_listener: # Use pynput if available
+                logging.info("Starting pynput keyboard listener")
                 self.keyboard_listener.start()
+                logging.info("Pynput keyboard listener started successfully")
             elif system() == "Darwin" and HAS_PYOBJC: # Use AppKit on macOS if available
                 logging.info("Attempting to start AppKit global key monitor.")
 
@@ -617,6 +741,9 @@ class Recorder(QThread):
                 except Exception as e:
                     logging.error(f"Error checking Accessibility permissions: {e}")
 
+            # Add periodic page checking for more reliable capturing
+            self._start_page_monitoring()
+
             self.obs_client.start_recording()
 
             while self._is_recording:
@@ -639,30 +766,616 @@ class Recorder(QThread):
                  except Exception: pass
             self._cleanup()
 
+    def _start_page_monitoring(self):
+        """Start monitoring browser pages for changes"""
+        if not self.capture_data_path:
+            logging.error("No capture path, can't start page monitoring")
+            return
+            
+        # Create a timer that periodically checks browser URL
+        if system() == "Darwin":
+            try:
+                import threading
+                self.url_check_timer = threading.Timer(PAGE_CHECK_INTERVAL, self._check_browser_page)
+                self.url_check_timer.daemon = True
+                self.url_check_timer.start()
+                logging.info("Started browser page monitoring timer")
+                
+                # Also add periodic DOM capture timer - with longer interval
+                self.periodic_capture_timer = threading.Timer(PERIODIC_CAPTURE_INTERVAL, self._perform_periodic_capture)
+                self.periodic_capture_timer.daemon = True
+                self.periodic_capture_timer.start()
+                logging.info(f"Started periodic DOM capture timer (every {PERIODIC_CAPTURE_INTERVAL} seconds)")
+            except Exception as e:
+                logging.error(f"Failed to start page monitoring: {e}")
+    
+    def _check_browser_page(self):
+        """Check if browser URL or window has changed and capture DOM if needed"""
+        if not self._is_recording or self._is_paused:
+            # Restart timer if recording isn't paused
+            if self._is_recording and not self._is_paused:
+                try:
+                    import threading
+                    self.url_check_timer = threading.Timer(PAGE_CHECK_INTERVAL, self._check_browser_page)
+                    self.url_check_timer.daemon = True
+                    self.url_check_timer.start()
+                except Exception as e:
+                    logging.error(f"Failed to restart URL check timer: {e}")
+            return
+            
+        # Run the page check in a thread to avoid blocking
+        try:
+            import threading
+            worker = threading.Thread(target=self._background_page_check, daemon=True)
+            worker.start()
+            
+            # Restart timer
+            self.url_check_timer = threading.Timer(PAGE_CHECK_INTERVAL, self._check_browser_page)
+            self.url_check_timer.daemon = True
+            self.url_check_timer.start()
+        except Exception as e:
+            logging.error(f"Error in _check_browser_page: {e}")
+    
+    def _background_page_check(self):
+        """Check for browser page changes"""
+        try:
+            # Skip if browser is not focused
+            if not self.is_chromium_focused:
+                return
+            
+            # Check for open Chrome debugging port
+            port = self._find_chrome_debugging_port()
+            if not port:
+                return
+        
+            # Get list of tabs
+            try:
+                tabs_response = requests.get(f"http://localhost:{port}/json/list", timeout=1)
+                if tabs_response.status_code != 200:
+                    return
+                
+                tabs = tabs_response.json()
+                if not tabs:
+                    return
+            
+                # Find active tab
+                active_tab = None
+                for tab in tabs:
+                    if tab.get('type') == 'page' and tab.get('url'):
+                        url = tab.get('url')
+                        # Skip browser UI pages
+                        if not (url.startswith('chrome') or 
+                                url.startswith('edge:') or 
+                                url.startswith('brave:')):
+                            if tab.get('active'):
+                                active_tab = tab
+                                break
+                            elif not active_tab:
+                                active_tab = tab
+            
+                if active_tab:
+                    url = active_tab.get('url')
+                    title = active_tab.get('title', 'Unknown')
+                    window_id = active_tab.get('id', 'Unknown')
+                    
+                    # Check if URL or window changed
+                    if url != self.current_browser_url or window_id != self.current_window_id:
+                        self.last_browser_url = self.current_browser_url
+                        self.current_browser_url = url
+                        self.last_window_id = self.current_window_id
+                        self.current_window_id = window_id
+                        
+                        logging.info(f"Browser page changed to: {title} ({url})")
+                        
+                        # Capture DOM in background thread
+                        import threading
+                        dom_thread = threading.Thread(
+                            target=self._capture_dom_for_page_change,
+                            args=(url, title),
+                            daemon=True
+                        )
+                        dom_thread.start()
+            except Exception as e:
+                logging.debug(f"Error checking browser tabs: {e}")
+        except Exception as e:
+            logging.error(f"Error in background page check: {e}")
+        
+    def _capture_dom_for_page_change(self, url, title):
+        """Capture DOM snapshot when the page changes"""
+        if not self.capture_data_path:
+            return
+            
+        logging.info(f"Capturing DOM for page change: {title}")
+        
+        # Add a delay to give the page time to start loading
+        time.sleep(PAGE_LOAD_DELAY)
+        
+        # Capture DOM with multiple attempts to ensure it's fully loaded
+        self._smart_dom_capture(url, title, "page_change")
+
+    def _smart_dom_capture(self, url, title, capture_type, max_retries=PAGE_LOAD_ATTEMPTS, x=None, y=None, button=None):
+        """Simple DOM capture for clicks and other events."""
+        # Protect the critical section with a lock
+        with self.dom_capture_lock:
+            # Don't capture if recording is paused or we're not in a browser
+            if not self._is_recording or self._is_paused or not self.is_chromium_focused:
+                return None
+                
+            logging.info(f"Starting DOM capture for {capture_type} (URL: {url})")
+            
+            # Check if we've captured too recently - but ALWAYS TRY for user clicks
+            current_time = time.perf_counter()
+            if capture_type != "click" and current_time - self.last_dom_capture_time < MIN_DOM_CAPTURE_INTERVAL:
+                logging.info(f"DOM capture skipped (too soon): {current_time - self.last_dom_capture_time:.2f}s < {MIN_DOM_CAPTURE_INTERVAL}s.")
+                return None
+            
+            # Capture DOM content (defaults to port 9222)
+            snapshot_mhtml = capture_chromium_dom_snapshot()
+            
+            # If we got content, save it
+            if snapshot_mhtml:
+                # Don't bother with duplicate checks for small placeholders - they're already fallbacks
+                content_size = len(snapshot_mhtml.encode('utf-8', 'replace'))
+                is_placeholder = "DuckTrack DOM Capture Placeholder" in snapshot_mhtml
+                should_deduplicate = content_size > 2000 and not is_placeholder
+                
+                if should_deduplicate:
+                    # Only hash a reasonable portion for large files (first 10KB)
+                    content_hash = hashlib.md5(snapshot_mhtml.encode('utf-8', 'replace')[:10000]).hexdigest()
+                    if content_hash in self.recent_dom_hashes:
+                        logging.info(f"Skipping duplicate DOM content (hash: {content_hash[:8]}, size: {content_size} bytes)")
+                        return None
+                    
+                    # Update deduplication list
+                    self.recent_dom_hashes.append(content_hash)
+                    if len(self.recent_dom_hashes) > RECENT_DOM_HASH_CAPACITY:
+                        self.recent_dom_hashes.pop(0)
+                    
+                # Always update capture time even for placeholders
+                snapshot_timestamp = time.perf_counter()
+                self.last_dom_capture_time = snapshot_timestamp
+                
+                # Create filename with good contextual info
+                url_hash = hashlib.md5(url.encode('utf-8', 'replace')).hexdigest()[:8] if url else "unknown"
+                safe_title = title.replace(" ", "_").replace("/", "-")[:30] if title else "notitle"
+                filename = f"dom_{capture_type}_{safe_title}_{url_hash}_{snapshot_timestamp:.6f}.mhtml"
+                filepath = os.path.join(self.capture_data_path, filename)
+                
+                # Save to file
+                try:
+                    with open(filepath, 'w', encoding='utf-8') as f:
+                        f.write(snapshot_mhtml)
+                    logging.info(f"DOM snapshot saved: {filepath} (Size: {content_size} bytes)")
+                    
+                    # Add event for click captures
+                    if capture_type == "click" and x is not None and y is not None and button is not None:
+                        update_event = {
+                            "time_stamp": snapshot_timestamp, 
+                            "action": "dom_capture", 
+                            "dom_snapshot": filepath, 
+                            "is_mhtml": True,
+                            "x": x, "y": y, "button": button, "capture_type": capture_type
+                        }
+                        self.event_queue.put(update_event, block=False)
+                        
+                    return filepath
+                except Exception as e:
+                    logging.error(f"Error saving DOM snapshot: {e}")
+                    return None
+            else:
+                logging.warning(f"Failed to capture DOM snapshot for {capture_type}")
+                return None
+
+    def _find_chrome_debugging_port(self):
+        """Find an available Chrome debugging port"""
+        # ... (current implementation is okay, but pychrome calls later might fail)
+        # No changes needed here for now, as this uses requests, not pychrome directly for discovery
+        for port in range(9222, 9232):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                    sock.settimeout(0.3)
+                    if sock.connect_ex(('127.0.0.1', port)) == 0:
+                        try:
+                            response = requests.get(f"http://127.0.0.1:{port}/json/version", timeout=0.5)
+                            if response.status_code == 200:
+                                browser_info = response.json()
+                                logging.info(f"Found active Chrome port: {port} ({browser_info.get('Browser')})")
+                                return port
+                        except (requests.exceptions.RequestException, json.JSONDecodeError):
+                            try:
+                                response = requests.get(f"http://localhost:{port}/json/version", timeout=0.5)
+                                if response.status_code == 200:
+                                    browser_info = response.json()
+                                    logging.info(f"Found active Chrome port (localhost): {port} ({browser_info.get('Browser')})")
+                                    return port
+                            except (requests.exceptions.RequestException, json.JSONDecodeError):
+                                pass 
+            except socket.error:
+                pass
+        logging.warning("No active Chrome debugging port found.")
+        return None
+
+    def _capture_dom_snapshot_with_details(self, port):
+        """Captures DOM snapshot. Returns MHTML if successful, otherwise tries for HTML fallback."""
+        logging.info(f"[_capture_debug] Attempting connection for DOM snapshot on port {port}")
+        browser = None
+        actual_cdp_tab = None
+        # Initialize return dictionary with defaults
+        result_details = {
+            "mhtml_data": None, "mhtml_size": 0, 
+            "html_data": None, "html_size": 0,
+            "is_content_complete": False, "html_length": 0,
+            "is_fallback": False
+        }
+
+        try:
+            browser = pychrome.Browser(url=f"http://127.0.0.1:{port}")
+            logging.info(f"[_capture_debug] Browser object created for 127.0.0.1:{port}")
+        except Exception as e_conn:
+            logging.warning(f"[_capture_debug] Failed Browser() for 127.0.0.1:{port}, trying localhost. Error: {e_conn}")
+            try:
+                browser = pychrome.Browser(url=f"http://localhost:{port}")
+                logging.info(f"[_capture_debug] Browser object created for localhost:{port}")
+            except Exception as e_conn_localhost:
+                logging.error(f"[_capture_debug] All Browser() connection attempts failed for port {port}: {e_conn_localhost}")
+                return result_details # Return defaults indicating failure
+        
+        if not browser:
+            logging.error("[_capture_debug] Browser object None after attempts.")
+            return result_details
+
+        try:
+            # First try to get all tabs
+            try:
+                tabs_list = browser.list_tab()
+                if not tabs_list:
+                    logging.warning("[_capture_debug] No tabs from browser.list_tab().")
+                    return result_details
+            except Exception as e_list:
+                logging.error(f"[_capture_debug] Error listing tabs: {e_list}")
+                return result_details
+            
+            # Simplified tab selection: first 'page' type not chrome:// or edge:// or brave://
+            selected_tab = None
+            for tab in tabs_list:
+                tab_url = getattr(tab, 'url', None) if hasattr(tab, 'url') else tab.get('url', '')
+                tab_type = getattr(tab, 'type', None) if hasattr(tab, 'type') else tab.get('type', '')
+                
+                if tab_type == 'page' and tab_url and not (
+                    tab_url.startswith('chrome:') or 
+                    tab_url.startswith('edge:') or
+                    tab_url.startswith('brave:') or
+                    tab_url.startswith('about:')
+                ):
+                    selected_tab = tab
+                    break
+            
+            # If no suitable tab found, use first tab
+            if not selected_tab and tabs_list:
+                selected_tab = tabs_list[0]
+                
+            if not selected_tab:
+                logging.warning("[_capture_debug] No tabs available to capture.")
+                return result_details
+                
+            # Get tab ID to find the actual tab object
+            tab_id = None
+            if isinstance(selected_tab, dict):
+                tab_id = selected_tab.get('id')
+            elif hasattr(selected_tab, 'id'):
+                tab_id = selected_tab.id
+            
+            if not tab_id:
+                logging.warning("[_capture_debug] Cannot determine tab ID.")
+                return result_details
+                
+            # Find actual tab object - try to get it directly if it's already a pychrome.Tab
+            if hasattr(selected_tab, 'start') and callable(getattr(selected_tab, 'start')):
+                actual_cdp_tab = selected_tab
+                logging.info(f"[_capture_debug] Using selected tab directly - ID: {actual_cdp_tab.id}")
+            else:
+                # Search for the tab by ID
+                try:
+                    for tab in browser.list_tab():
+                        if hasattr(tab, 'id') and tab.id == tab_id:
+                            actual_cdp_tab = tab
+                            logging.info(f"[_capture_debug] Found tab by ID matching: {tab_id}")
+                            break
+                except Exception as e_search:
+                    logging.error(f"[_capture_debug] Error searching for tab: {e_search}")
+                    return result_details
+                    
+            if not actual_cdp_tab:
+                logging.warning(f"[_capture_debug] Could not find tab with ID {tab_id}")
+                return result_details
+                
+            # Start the tab with proper error handling
+            try:
+                logging.info(f"[_capture_debug] Attempting to start tab {actual_cdp_tab.id}")
+                actual_cdp_tab.start()
+                logging.info(f"[_capture_debug] Tab {actual_cdp_tab.id} started successfully.")
+            except Exception as e_start:
+                logging.error(f"[_capture_debug] Error starting tab: {e_start}")
+                return result_details
+            
+            # Try to get readyState
+            try:
+                result = actual_cdp_tab.call_method("Runtime.evaluate", 
+                                       expression="document.readyState",
+                                       returnByValue=True,
+                                       _timeout=3.0)
+                if result and 'result' in result and 'value' in result['result']:
+                    result_details["is_content_complete"] = (result['result']['value'] == 'complete')
+                    logging.info(f"[_capture_debug] Document ready state: {result['result']['value']}")
+            except Exception as e:
+                logging.warning(f"[_capture_debug] Error getting ready state: {e}")
+                
+            # Capture MHTML first (preferred format)
+            try:
+                # IMPROVED: Use the direct method call with a reasonable timeout
+                mhtml_result = actual_cdp_tab.call_method("Page.captureSnapshot", 
+                                                         format="mhtml", 
+                                                         _timeout=8.0)
+                
+                if mhtml_result and 'data' in mhtml_result:
+                    result_details["mhtml_data"] = mhtml_result['data']
+                    result_details["mhtml_size"] = len(mhtml_result['data'])
+                    logging.info(f"[_capture_debug] MHTML capture successful: {result_details['mhtml_size']} bytes")
+                else:
+                    logging.warning("[_capture_debug] MHTML capture returned no data")
+                    result_details["is_fallback"] = True
+            except Exception as e:
+                logging.warning(f"[_capture_debug] Error in MHTML capture: {e}")
+                result_details["is_fallback"] = True
+                
+            # Try HTML fallback if MHTML failed
+            if result_details["is_fallback"]:
+                try:
+                    html_result = actual_cdp_tab.call_method("Runtime.evaluate",
+                                                           expression="document.documentElement.outerHTML",
+                                                           returnByValue=True,
+                                                           _timeout=5.0)
+                    
+                    if html_result and 'result' in html_result and 'value' in html_result['result']:
+                        html_content = html_result['result']['value']
+                        if html_content:
+                            result_details["html_data"] = html_content
+                            result_details["html_size"] = len(html_content.encode('utf-8', 'replace'))
+                            logging.info(f"[_capture_debug] HTML fallback successful: {result_details['html_size']} bytes")
+                        else:
+                            logging.warning("[_capture_debug] HTML fallback returned empty string")
+                    else:
+                        logging.warning("[_capture_debug] HTML fallback evaluation failed")
+                except Exception as e:
+                    logging.warning(f"[_capture_debug] Error in HTML fallback: {e}")
+                    
+        except Exception as e:
+            logging.error(f"[_capture_debug] General error in tab operations: {e}")
+        finally:
+            # Always stop the tab to clean up
+            if actual_cdp_tab:
+                try:
+                    logging.info(f"[_capture_debug] Stopping tab {actual_cdp_tab.id}")
+                    actual_cdp_tab.stop()
+                    logging.info(f"[_capture_debug] Tab {actual_cdp_tab.id} stopped successfully")
+                except Exception as e:
+                    logging.debug(f"[_capture_debug] Error stopping tab: {e}")
+                    
+        return result_details
+
+    def _perform_periodic_capture(self):
+        """Periodically capture DOM to ensure we don't miss anything"""
+        if not self._is_recording or self._is_paused or not self.is_chromium_focused:
+            # Restart timer if recording is active
+            if self._is_recording and not self._is_paused:
+                try:
+                    import threading
+                    self.periodic_capture_timer = threading.Timer(PERIODIC_CAPTURE_INTERVAL, self._perform_periodic_capture)
+                    self.periodic_capture_timer.daemon = True
+                    self.periodic_capture_timer.start()
+                except Exception as e:
+                    logging.error(f"Failed to restart periodic capture timer: {e}")
+            return
+            
+        # Only perform periodic capture if it's been a while since the last one
+        current_time = time.perf_counter()
+        if current_time - self.last_dom_capture_time >= PERIODIC_CAPTURE_INTERVAL:
+            logging.info("Performing periodic DOM capture")
+            
+            # Get current URL if possible
+            url = "unknown"
+            title = "periodic"
+            for port in range(9222, 9232):
+                try:
+                    response = requests.get(f"http://localhost:{port}/json/list", timeout=1)
+                    if response.status_code == 200:
+                        tabs = response.json()
+                        for tab in tabs:
+                            if tab.get('type') == 'page' and tab.get('url') and tab.get('active'):
+                                url = tab.get('url')
+                                title = tab.get('title', 'Unknown')
+                                break
+                        if url != "unknown":
+                            break
+                except:
+                    continue
+            
+            # Capture DOM
+            self._smart_dom_capture(url, title, "periodic")
+        
+        # Restart timer
+        try:
+            import threading
+            self.periodic_capture_timer = threading.Timer(PERIODIC_CAPTURE_INTERVAL, self._perform_periodic_capture)
+            self.periodic_capture_timer.daemon = True
+            self.periodic_capture_timer.start()
+        except Exception as e:
+            logging.error(f"Failed to restart periodic capture timer: {e}")
+
+    def _delayed_click_capture(self, x, y, button_name):
+        """Perform a delayed capture after waiting for page to load"""
+        try:
+            if not self._is_recording or self._is_paused or not self.is_chromium_focused:
+                return
+            
+            # Verify page is loaded now
+            is_loaded = self._verify_page_is_loaded()
+            if not is_loaded:
+                logging.warning("Page still not fully loaded after delay")
+                
+                # Add one final attempt with longer delay for complex pages
+                try:
+                    import threading
+                    
+                    def final_click_capture():
+                        try:
+                            if not self._is_recording or self._is_paused or not self.is_chromium_focused:
+                                return
+                                
+                            logging.info(f"Final attempt to capture DOM after click at ({x},{y})")
+                            snapshot_mhtml = capture_chromium_dom_snapshot()
+                            
+                            if snapshot_mhtml and len(snapshot_mhtml) > 5000:
+                                # Check for duplicate
+                                content_hash = hashlib.md5(snapshot_mhtml.encode()[:50000]).hexdigest()
+                                if content_hash in self.recent_dom_hashes:
+                                    logging.info(f"Skipping duplicate final DOM snapshot (hash: {content_hash[:8]})")
+                                    return
+                                
+                                # Add to recent hashes
+                                self.recent_dom_hashes.append(content_hash)
+                                # Maintain limited size
+                                if len(self.recent_dom_hashes) > RECENT_DOM_HASH_CAPACITY:
+                                    self.recent_dom_hashes.pop(0)
+                                    
+                                timestamp = time.perf_counter()
+                                self.last_dom_capture_time = timestamp
+                                filename = f"dom_click_final_{timestamp:.6f}.mhtml"
+                                filepath = os.path.join(self.capture_data_path, filename)
+                                
+                                with open(filepath, 'w', encoding='utf-8') as f:
+                                    f.write(snapshot_mhtml)
+                                logging.info(f"Final DOM snapshot saved to: {filepath}")
+                                
+                                # Add an update event to the queue
+                                update_event = {
+                                    "time_stamp": timestamp,
+                                    "action": "final_dom_capture",
+                                    "dom_snapshot": filepath,
+                                    "original_x": x,
+                                    "original_y": y,
+                                    "button": button_name
+                                }
+                                self.event_queue.put(update_event, block=False)
+                        except Exception as e:
+                            logging.error(f"Error in final click DOM capture: {e}")
+                    
+                    # Try one more time after another 2 seconds
+                    final_thread = threading.Timer(2.0, final_click_capture)
+                    final_thread.daemon = True
+                    final_thread.start()
+                except Exception as e:
+                    logging.error(f"Failed to schedule final click capture: {e}")
+            
+            logging.info(f"Performing delayed DOM capture after click at ({x},{y})")
+            snapshot_mhtml = capture_chromium_dom_snapshot()
+            
+            if snapshot_mhtml and len(snapshot_mhtml) > 5000:  # Increased minimum content requirement
+                # Check if duplicate
+                content_hash = hashlib.md5(snapshot_mhtml.encode()[:50000]).hexdigest()
+                if content_hash in self.recent_dom_hashes:
+                    logging.info(f"Skipping duplicate delayed DOM snapshot (hash: {content_hash[:8]})")
+                    return
+                
+                # Add to recent hashes
+                self.recent_dom_hashes.append(content_hash)
+                # Maintain limited size
+                if len(self.recent_dom_hashes) > RECENT_DOM_HASH_CAPACITY:
+                    self.recent_dom_hashes.pop(0)
+                
+                timestamp = time.perf_counter()
+                self.last_dom_capture_time = timestamp
+                filename = f"dom_click_delayed_{timestamp:.6f}.mhtml"
+                filepath = os.path.join(self.capture_data_path, filename)
+                
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(snapshot_mhtml)
+                logging.info(f"Delayed DOM snapshot after click saved to: {filepath}")
+                
+                # Add an update event to the queue
+                update_event = {
+                    "time_stamp": timestamp,
+                    "action": "delayed_dom_capture",
+                    "dom_snapshot": filepath,
+                    "original_x": x,
+                    "original_y": y,
+                    "button": button_name,
+                    "page_fully_loaded": is_loaded
+                }
+                self.event_queue.put(update_event, block=False)
+        except Exception as e:
+            logging.error(f"Error in delayed DOM capture: {e}")
+
+    def _schedule_delayed_capture(self, x, y, button_name):
+        """Schedule a delayed capture after a click"""
+        try:
+            import threading
+            logging.info("Scheduling a delayed capture after click in case page is changing...")
+            
+            # Increased delay to 1.5 seconds (from 0.8) to allow more time for page to load
+            delay_thread = threading.Timer(1.5, lambda: self._delayed_click_capture(x, y, button_name))
+            delay_thread.daemon = True
+            delay_thread.start()
+        except Exception as e:
+            logging.error(f"Error scheduling delayed capture: {e}")
+
     def _cleanup(self):
         logging.debug("Recorder cleanup started.")
         logging.debug("Stopping input listeners/monitors...")
 
-        # Stop AppKit monitor first if it exists
-        if self.macos_key_monitor and HAS_PYOBJC:
-            try:
-                logging.info("Removing AppKit global key monitor.")
-                AppKit.NSEvent.removeMonitor_(self.macos_key_monitor)
-                self.macos_key_monitor = None
-            except Exception as e:
-                logging.error(f"Error removing AppKit monitor: {e}")
+        # Stop timers
+        if self.url_check_timer:
+            self.url_check_timer.cancel()
+            self.url_check_timer = None
+            
+        if self.periodic_capture_timer:
+            self.periodic_capture_timer.cancel()
+            self.periodic_capture_timer = None
+
+        # Stop AppKit monitors first if they exist
+        if HAS_PYOBJC:
+            if self.macos_key_monitor:
+                try:
+                    logging.info("Removing AppKit global key monitor.")
+                    AppKit.NSEvent.removeMonitor_(self.macos_key_monitor)
+                    self.macos_key_monitor = None
+                except Exception as e:
+                    logging.error(f"Error removing AppKit key monitor: {e}")
+                    
+            if self.macos_mouse_monitor:
+                try:
+                    logging.info("Removing AppKit global mouse monitor.")
+                    AppKit.NSEvent.removeMonitor_(self.macos_mouse_monitor)
+                    self.macos_mouse_monitor = None
+                except Exception as e:
+                    logging.error(f"Error removing AppKit mouse monitor: {e}")
 
         # Stop pynput listeners
         if hasattr(self, 'mouse_listener') and self.mouse_listener.is_alive():
             try:
+                logging.info("Stopping mouse listener")
                 self.mouse_listener.stop()
                 self.mouse_listener.join(timeout=1.0)
+                logging.info("Mouse listener stopped successfully")
             except Exception as e:
                 logging.error(f"Error stopping mouse listener: {e}")
+                
         if self.keyboard_listener and hasattr(self, 'keyboard_listener') and self.keyboard_listener.is_alive():
             try:
+                logging.info("Stopping keyboard listener")
                 self.keyboard_listener.stop()
                 self.keyboard_listener.join(timeout=1.0)
+                logging.info("Keyboard listener stopped successfully")
             except Exception as e:
                 logging.error(f"Error stopping keyboard listener: {e}")
 
@@ -710,6 +1423,9 @@ class Recorder(QThread):
     def stop_recording(self):
         if self._is_recording:
             logging.info("Stopping recording...")
+            # Set global shutdown flag to prevent new folder creation during cleanup
+            global SHUTDOWN_IN_PROGRESS
+            SHUTDOWN_IN_PROGRESS = True
             self._is_recording = False
 
     def toggle_pause(self):
@@ -730,10 +1446,65 @@ class Recorder(QThread):
                 logging.error(f"Error toggling OBS pause state: {e}")
 
     def _get_recording_path(self) -> str:
+        """Create a unique recording path with proper locking to prevent duplicates"""
+        import os  # Ensure os is available in this method
+        
+        # Don't create new folders during shutdown
+        global SHUTDOWN_IN_PROGRESS
+        if SHUTDOWN_IN_PROGRESS:
+            # Return the existing path if available, otherwise use a temp dir
+            if hasattr(self, 'recording_path') and self.recording_path:
+                return self.recording_path
+            import tempfile
+            return tempfile.mkdtemp(prefix="ducktrack_temp_")
+        
         recordings_dir = get_recordings_dir()
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        path = os.path.join(recordings_dir, timestamp)
-        os.makedirs(path, exist_ok=True)
+        base_path = os.path.join(recordings_dir, timestamp)
+        
+        # Use a lockfile to prevent race conditions between multiple instances
+        lock_file = os.path.join(recordings_dir, ".folder_creation.lock")
+        
+        try:
+            # Get an exclusive lock with a timeout
+            with filelock.FileLock(lock_file, timeout=10):
+                # Check if the exact path already exists
+                if os.path.exists(base_path):
+                    logging.warning(f"Recording path already exists: {base_path}")
+                    
+                    # Find a unique suffix by incrementing until we get a new one
+                    suffix = 1
+                    while True:
+                        path = os.path.join(recordings_dir, f"{timestamp}_{suffix}")
+                        if not os.path.exists(path):
+                            break
+                        suffix += 1
+                else:
+                    path = base_path
+                
+                # Create the folder
+                try:
+                    os.makedirs(path, exist_ok=False)  # Use exist_ok=False to detect race conditions
+                    logging.info(f"Created recording path: {path}")
+                except FileExistsError:
+                    # If folder somehow exists despite our checks, create a truly unique one
+                    path = os.path.join(recordings_dir, f"{timestamp}_{int(time.time())}")
+                    os.makedirs(path, exist_ok=True)
+                    logging.warning(f"Using alternative path due to concurrent creation: {path}")
+                    
+        except filelock.Timeout:
+            logging.error("Timeout acquiring folder creation lock")
+            # Fallback to a path with timestamp + pid which should be unique
+            path = os.path.join(recordings_dir, f"{timestamp}_{os.getpid()}")
+            os.makedirs(path, exist_ok=True)
+            logging.warning(f"Using fallback path with PID: {path}")
+        except Exception as e:
+            logging.error(f"Error creating recording path: {e}")
+            # Fallback to temp directory if needed
+            import tempfile
+            path = tempfile.mkdtemp(prefix="ducktrack_")
+            logging.warning(f"Using fallback recording path in temp dir: {path}")
+        
         return path
 
     def set_natural_scrolling(self, natural_scrolling: bool):
@@ -802,34 +1573,22 @@ class Recorder(QThread):
         if not self._is_recording or self._is_paused:
             return event
 
-        # Capture accessibility tree (always on macOS here)
-        accessibility_tree_path = None
-        if self.capture_data_path: # Check if path was created
-            tree = capture_macos_accessibility_tree()
-            if tree:
-                tree_timestamp = time.perf_counter() # Use separate timestamp for filename
-                # Determine filename based on action type for clarity
-                action_type_for_file = "unknown_key_action"
-                if event.type() == AppKit.NSEventTypeKeyDown: action_type_for_file = "keypress"
-                elif event.type() == AppKit.NSEventTypeKeyUp: action_type_for_file = "keyrelease"
-                elif event.type() == AppKit.NSEventTypeFlagsChanged: action_type_for_file = "flagschanged"
-
-                filename = f"a11y_{action_type_for_file}_{tree_timestamp:.6f}.json"
-                filepath = os.path.join(self.capture_data_path, filename)
-                logging.debug(f"Attempting to save accessibility tree to: {filepath}")
-                try:
-                    with open(filepath, 'w') as f:
-                        json.dump(tree, f, indent=2)
-                    logging.debug(f"Successfully saved accessibility tree: {filepath}")
-                    accessibility_tree_path = filepath
-                except Exception as e:
-                    logging.error(f"Error saving accessibility tree to {filepath} (macOS handler): {e}", exc_info=True)
-
         try:
             # Use integer type codes
             event_type = int(event.type()) # Ensure integer type
             key_code = event.keyCode()
             modifierFlags = event.modifierFlags()
+
+            # Determine action type for filename early (needed for capture decisions)
+            action_type_for_file = "unknown_key_action"
+            if event_type == AppKit.NSEventTypeKeyDown: 
+                action_type_for_file = "keypress"
+            elif event_type == AppKit.NSEventTypeKeyUp: 
+                action_type_for_file = "keyrelease"
+            elif event_type == AppKit.NSEventTypeFlagsChanged: 
+                action_type_for_file = "flagschanged"
+            else:
+                return event  # Skip other event types
 
             action = None
             final_name = None 
@@ -850,12 +1609,12 @@ class Recorder(QThread):
                     # Check current flag state using AppKit constants
                     try: 
                         flag_map = {
-                             'shift': AppKit.NSShiftKeyMask, 'right_shift': AppKit.NSShiftKeyMask,
-                             'cmd': AppKit.NSCommandKeyMask, 'right_cmd': AppKit.NSCommandKeyMask,
-                             'alt': AppKit.NSAlternateKeyMask, 'right_alt': AppKit.NSAlternateKeyMask,
-                             'ctrl': AppKit.NSControlKeyMask, 'right_ctrl': AppKit.NSControlKeyMask,
-                             'fn': AppKit.NSFunctionKeyMask, 
-                             'caps_lock': AppKit.NSAlphaShiftKeyMask
+                            'shift': AppKit.NSShiftKeyMask, 'right_shift': AppKit.NSShiftKeyMask,
+                            'cmd': AppKit.NSCommandKeyMask, 'right_cmd': AppKit.NSCommandKeyMask,
+                            'alt': AppKit.NSAlternateKeyMask, 'right_alt': AppKit.NSAlternateKeyMask,
+                            'ctrl': AppKit.NSControlKeyMask, 'right_ctrl': AppKit.NSControlKeyMask,
+                            'fn': AppKit.NSFunctionKeyMask, 
+                            'caps_lock': AppKit.NSAlphaShiftKeyMask
                         }
                         modifier_flag = flag_map.get(mod_name)
                         if modifier_flag:
@@ -885,6 +1644,159 @@ class Recorder(QThread):
                     if not (chars and len(chars) == 1 and chars.isprintable()):
                         final_name = key_map.get(key_code, f"KeyCode_{key_code}")
             
+            # Determine if we should capture a11y tree (only for specific keys and respect throttling)
+            accessibility_tree_path = None
+            current_time = time.perf_counter()
+            should_capture_a11y = False
+            
+            # Important keys that should always trigger captures regardless of timing
+            important_keys = {'enter', 'return', 'tab', 'space', 'esc', 'escape'}
+            
+            # Capture a11y tree ONLY on key RELEASE events, not on press
+            # This gives the UI time to update and avoids duplicates
+            should_schedule_delayed_capture = False
+
+            # For key release events (capturing after the action completes)
+            if action == "release" and (
+                final_name in important_keys or 
+                (final_name in A11Y_CAPTURE_KEYS and 
+                 current_time - self.last_a11y_capture_time >= MIN_A11Y_CAPTURE_INTERVAL)):
+                should_schedule_delayed_capture = True
+                logging.info(f"Should schedule delayed capture for key release: {final_name}")
+            # Also capture for modifier key changes if enough time has passed
+            elif (action_type_for_file == "flagschanged" and 
+                 current_time - self.last_a11y_capture_time >= MIN_A11Y_CAPTURE_INTERVAL):
+                should_capture_a11y = True  # Immediate capture for modifier changes
+                logging.info(f"Should capture a11y tree for modifier change: {final_name}")
+            
+            # No longer capturing on key press, even for important keys
+                
+            # Schedule a delayed capture to give UI time to update
+            if should_schedule_delayed_capture and self.capture_data_path:
+                try:
+                    import threading
+                    
+                    def delayed_key_capture(key_name):
+                        try:
+                            if not self._is_recording or self._is_paused:
+                                return
+                                
+                            time.sleep(0.3)  # Small delay to let UI update
+                            logging.info(f"Performing delayed a11y capture for key: {key_name}")
+                            
+                            tree = capture_macos_accessibility_tree()
+                            if not tree:
+                                logging.error(f"Failed to capture delayed a11y tree for key: {key_name}")
+                                return
+                                
+                            # Check for duplicates
+                            tree_str = json.dumps(tree)
+                            tree_hash = hashlib.md5(tree_str.encode()).hexdigest()
+                            
+                            with self.a11y_capture_lock:
+                                if tree_hash in self.recent_a11y_hashes:
+                                    logging.info(f"Skipping duplicate delayed a11y tree (hash: {tree_hash[:8]})")
+                                    return
+                                
+                                # Add to recent hashes
+                                self.recent_a11y_hashes.append(tree_hash)
+                                if len(self.recent_a11y_hashes) > RECENT_A11Y_HASH_CAPACITY:
+                                    self.recent_a11y_hashes.pop(0)
+                                
+                                timestamp = time.perf_counter()
+                                self.last_a11y_capture_time = timestamp
+                                
+                                filename = f"a11y_delayed_{key_name}_{timestamp:.6f}.json"
+                                filepath = os.path.join(self.capture_data_path, filename)
+                                
+                                with open(filepath, 'w') as f:
+                                    json.dump(tree, f, indent=2)
+                                logging.info(f"Delayed a11y tree saved: {filepath}")
+                                
+                                # Create an event for the delayed capture
+                                event = {
+                                    "time_stamp": timestamp,
+                                    "action": "delayed_a11y_capture",
+                                    "key": key_name,
+                                    "accessibility_tree": filepath
+                                }
+                                self.event_queue.put(event, block=False)
+                                
+                            # Also try to capture DOM if in a browser
+                            if self.is_chromium_focused:
+                                logging.info(f"Also capturing DOM for delayed key: {key_name}")
+                                snapshot_mhtml = capture_chromium_dom_snapshot()
+                                if snapshot_mhtml:
+                                    # Check for duplicate
+                                    content_hash = hashlib.md5(snapshot_mhtml.encode('utf-8', 'replace')[:10000]).hexdigest()
+                                    
+                                    if content_hash not in self.recent_dom_hashes:
+                                        self.recent_dom_hashes.append(content_hash)
+                                        if len(self.recent_dom_hashes) > RECENT_DOM_HASH_CAPACITY:
+                                            self.recent_dom_hashes.pop(0)
+                                        
+                                        dom_timestamp = time.perf_counter()
+                                        self.last_dom_capture_time = dom_timestamp
+                                        
+                                        dom_filename = f"dom_delayed_{key_name}_{dom_timestamp:.6f}.mhtml"
+                                        dom_filepath = os.path.join(self.capture_data_path, dom_filename)
+                                        
+                                        with open(dom_filepath, 'w', encoding='utf-8') as f:
+                                            f.write(snapshot_mhtml)
+                                        logging.info(f"Delayed DOM snapshot saved: {dom_filepath}")
+                                        
+                                        # Add an event for the delayed DOM capture
+                                        dom_event = {
+                                            "time_stamp": dom_timestamp,
+                                            "action": "delayed_dom_capture",
+                                            "key": key_name,
+                                            "dom_snapshot": dom_filepath
+                                        }
+                                        self.event_queue.put(dom_event, block=False)
+                                    else:
+                                        logging.info(f"Skipping duplicate delayed DOM (hash: {content_hash[:8]})")
+                        except Exception as e:
+                            logging.error(f"Error in delayed key capture: {e}")
+                    
+                    # Start a separate thread for the delayed capture
+                    thread = threading.Thread(target=delayed_key_capture, args=(final_name,))
+                    thread.daemon = True
+                    thread.start()
+                except Exception as e:
+                    logging.error(f"Failed to schedule delayed key capture: {e}")
+            
+            # Only capture a11y tree immediately if determined necessary
+            if should_capture_a11y and self.capture_data_path:
+                logging.info(f"Attempting to capture accessibility tree for {action_type_for_file} {final_name}")
+                tree = capture_macos_accessibility_tree()
+                if tree:
+                    # Check for duplicate tree content
+                    tree_str = json.dumps(tree)
+                    tree_hash = hashlib.md5(tree_str.encode()).hexdigest()
+                    
+                    if tree_hash in self.recent_a11y_hashes:
+                        logging.info(f"Skipping duplicate a11y tree for key {final_name} (hash: {tree_hash[:8]})")
+                    else:
+                        # Add to recent hashes
+                        self.recent_a11y_hashes.append(tree_hash)
+                        if len(self.recent_a11y_hashes) > RECENT_A11Y_HASH_CAPACITY:
+                            self.recent_a11y_hashes.pop(0)
+                        
+                        tree_timestamp = current_time
+                        self.last_a11y_capture_time = tree_timestamp  # Update last capture time
+                        
+                        filename = f"a11y_{action_type_for_file}_{tree_timestamp:.6f}.json"
+                        filepath = os.path.join(self.capture_data_path, filename)
+                        try:
+                            with open(filepath, 'w') as f:
+                                json.dump(tree, f, indent=2)
+                            logging.info(f"Successfully saved accessibility tree: {filepath}")
+                            accessibility_tree_path = filepath
+                        except Exception as e:
+                            logging.error(f"Error saving accessibility tree to {filepath} (macOS handler): {e}", exc_info=True)
+                else:
+                    logging.error(f"Failed to capture accessibility tree for {action_type_for_file} {final_name}")
+            
             # Only queue if we determined a valid action and name
             if action and final_name:
                 key_event = {
@@ -897,28 +1809,66 @@ class Recorder(QThread):
                     "macos_modifierFlags": int(modifierFlags),
                     "accessibility_tree": accessibility_tree_path
                 }
+                
+                # Capture DOM snapshot if Chromium is focused and key is relevant
+                dom_snapshot_path = None
+                if self.is_chromium_focused and self.capture_data_path:
+                    # Only capture DOM snapshots on RELEASE events to match our a11y approach
+                    should_capture_dom = False
+                    
+                    # For important keys on key RELEASE only, not press
+                    important_keys = {'enter', 'return', 'tab', 'space', 'esc', 'escape'}
+                    
+                    # Key RELEASE events only
+                    if action == "release" and (
+                        final_name in important_keys or 
+                        (final_name in DOM_CAPTURE_KEYS and 
+                         current_time - self.last_dom_capture_time >= MIN_DOM_CAPTURE_INTERVAL)):
+                        should_capture_dom = True
+                        logging.info(f"Should capture DOM for key release: {final_name}")
+                    
+                    # Modifier key changes 
+                    elif (action_type_for_file == "flagschanged" and 
+                          current_time - self.last_dom_capture_time >= MIN_DOM_CAPTURE_INTERVAL):
+                        should_capture_dom = True
+                        logging.info(f"Should capture DOM for modifier change: {final_name}")
+                    
+                    if should_capture_dom:
+                        logging.info(f"Attempting DOM snapshot for {action_type_for_file} {final_name}")
+                        
+                        # Try multiple times for important key presses
+                        max_attempts = 3 if final_name in important_keys else 1
+                        snapshot_mhtml = None
+                        
+                        for attempt in range(max_attempts):
+                            if attempt > 0:
+                                logging.info(f"Retrying DOM capture, attempt {attempt+1}/{max_attempts}")
+                                time.sleep(0.2)  # Brief delay between attempts
+                                
+                            snapshot_mhtml = capture_chromium_dom_snapshot()
+                            if snapshot_mhtml:
+                                break
+                        
+                        if snapshot_mhtml:
+                            snap_timestamp = time.perf_counter()
+                            self.last_dom_capture_time = snap_timestamp  # Update last capture time
+                            
+                            # Include key name in filename if applicable
+                            key_suffix = f"_{final_name}" if final_name else ""
+                            filename = f"dom_{action_type_for_file}{key_suffix}_{snap_timestamp:.6f}.mhtml"
+                            filepath = os.path.join(self.capture_data_path, filename)
+                            try:
+                                with open(filepath, 'w', encoding='utf-8') as f:
+                                    f.write(snapshot_mhtml)
+                                key_event["dom_snapshot"] = filepath # Add path to existing event dict
+                                logging.info(f"DOM snapshot saved to: {filepath}")
+                            except Exception as e:
+                                logging.error(f"Error saving DOM snapshot (macOS handler): {e}")
+                        else:
+                            logging.error(f"Failed to capture DOM snapshot for {action_type_for_file} {final_name}")
+                
+                # Add the event to the queue
                 self.event_queue.put(key_event, block=False)
-
-            # Capture DOM snapshot if Chromium is focused and key is relevant
-            dom_snapshot_path = None
-            if self.is_chromium_focused and self.capture_data_path and \
-               (action == "press" and final_name in DOM_CAPTURE_KEYS or 
-                action == "release" and final_name in DOM_CAPTURE_KEYS or 
-                action_type_for_file == "flagschanged"):  # Always capture on modifier key changes
-                snapshot_mhtml = capture_chromium_dom_snapshot()
-                if snapshot_mhtml:
-                    # Reuse tree_timestamp for consistency if available, else use current time
-                    snap_timestamp = tree_timestamp if 'tree_timestamp' in locals() else time.perf_counter()
-                    # Include key name in filename if applicable
-                    key_suffix = f"_{final_name}" if final_name else ""
-                    filename = f"dom_{action_type_for_file}{key_suffix}_{snap_timestamp:.6f}.mhtml"
-                    filepath = os.path.join(self.capture_data_path, filename)
-                    try:
-                        with open(filepath, 'w', encoding='utf-8') as f:
-                            f.write(snapshot_mhtml)
-                        key_event["dom_snapshot"] = filepath # Add path to existing event dict
-                    except Exception as e:
-                        logging.error(f"Error saving DOM snapshot (macOS handler): {e}")
 
         except Exception as e:
             logging.error(f"Error handling detailed macOS key event: {e}")
@@ -932,21 +1882,6 @@ class Recorder(QThread):
                                   "action": "move",
                                   "x": x,
                                   "y": y}, block=False)
-
-    def on_click(self, x, y, button, pressed):
-        if not self._is_paused:
-            if pressed:
-                self.mouse_buttons_pressed.add(button)
-            else:
-                self.mouse_buttons_pressed.discard(button)
-            self.event_queue.put({
-                "time_stamp": time.perf_counter(),
-                "action": "click",
-                "x": x,
-                "y": y,
-                "button": button.name,
-                "pressed": pressed
-            }, block=False)
 
     def on_scroll(self, x, y, dx, dy):
         if not self._is_paused:
@@ -972,118 +1907,249 @@ class Recorder(QThread):
     # --- End pynput Callbacks ---
 
 # --- Helper function for CDP DOM Snapshot ---
-def capture_chromium_dom_snapshot(primary_port=9222):
-    """
-    Connects to any available Chromium browser and captures DOM snapshot of the active tab.
-    
-    Args:
-        primary_port: The primary port to try first (default: 9222)
+def capture_chromium_dom_snapshot(port=9222):
+    """Connects to Chrome via CDP and captures DOM snapshot of the active tab."""
+    try:
+        logging.debug(f"Attempting to connect to Chromium on port {port}...")
         
-    Returns:
-        MHTML data as string or None if failed
-    """
-    # First try the primary port, then check others
-    ports_to_try = [primary_port] + [p for p in CHROMIUM_DEBUG_PORTS if p != primary_port]
-    
-    for port in ports_to_try:
+        # First, check if Chrome is available with the debugging port
         try:
-            # Check if port is open to avoid timeout delay
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(0.5)
-                result = sock.connect_ex(('127.0.0.1', port))
-                if result != 0:
-                    # Port is not open, skip to next port
-                    logging.debug(f"Port {port} is not open, skipping...")
-                    continue
+            import requests
+            version_response = requests.get(f"http://127.0.0.1:{port}/json/version", timeout=2)
+            if version_response.status_code != 200:
+                logging.warning(f"Chrome debugging port returned status code {version_response.status_code}")
+                return None
+                
+            # Get the list of tabs
+            tabs_response = requests.get(f"http://127.0.0.1:{port}/json/list", timeout=2)
+            if tabs_response.status_code != 200:
+                logging.warning("Failed to get list of tabs")
+                return None
+                
+            tabs = tabs_response.json()
+            if not tabs:
+                logging.warning("No tabs found in Chrome/Edge")
+                return None
+                
+            # Find the first real page tab (not DevTools, extensions, etc.)
+            active_tab = None
+            for tab in tabs:
+                if tab.get('type') == 'page' and tab.get('url') and not tab.get('url').startswith('chrome'):
+                    active_tab = tab
+                    break
+                    
+            # If no suitable tab found, try the first tab of any type as fallback
+            if not active_tab and tabs:
+                active_tab = tabs[0]
+                
+            if not active_tab:
+                logging.warning("Could not find an active tab")
+                return None
+                
+            logging.debug(f"Found active tab: {active_tab.get('title')} - {active_tab.get('url')}")
             
-            logging.debug(f"Attempting to connect to Chromium on port {port}...")
+            # Now use pychrome to connect to this tab
+            import pychrome
+            browser = pychrome.Browser(url=f"http://127.0.0.1:{port}")
             
-            # Check Chrome availability with the debugging port
+            # Get the tab by ID
+            tab_id = active_tab.get('id')
+            if not tab_id:
+                logging.warning("Tab is missing ID")
+                return None
+                
+            # Use the browser.list_tab() to get the actual tab object
+            browser_tabs = browser.list_tab()
+            target_tab = None
+            
+            for bt in browser_tabs:
+                if hasattr(bt, 'id') and bt.id == tab_id:
+                    target_tab = bt
+                    break
+                    
+            if not target_tab:
+                logging.warning(f"Could not find tab with ID {tab_id} in browser tabs")
+                return None
+                
+            # Start the tab
+            target_tab.start()
+            
             try:
-                version_response = requests.get(f"http://127.0.0.1:{port}/json/version", timeout=2)
-                if version_response.status_code != 200:
-                    logging.debug(f"Chrome debugging port {port} returned status code {version_response.status_code}")
-                    continue
+                # Call Page.captureSnapshot - returns MHTML data
+                logging.debug("Calling Page.captureSnapshot...")
+                snapshot_data = target_tab.call_method("Page.captureSnapshot", format='mhtml', _timeout=5)
                 
-                browser_info = version_response.json()
-                browser_name = browser_info.get('Browser', 'Unknown browser')
-                logging.debug(f"Found browser: {browser_name} on port {port}")
+                if snapshot_data and 'data' in snapshot_data:
+                    logging.debug(f"Captured DOM snapshot: {len(snapshot_data['data'])} bytes")
+                    return snapshot_data.get('data')
+                else:
+                    logging.warning("CDP: captureSnapshot returned empty or invalid data")
+                    return None
+            finally:
+                target_tab.stop()
+                
+        except (requests.exceptions.ConnectionError, pychrome.exceptions.TimeoutException, websocket.WebSocketException) as e:
+            logging.warning(f"CDP connection/capture failed (port {port}): {e}")
+            return None
+            
+    except Exception as e:
+        logging.error(f"Unexpected error during CDP capture: {e}", exc_info=True)
+        return None
+
+def _try_http_capture(port):
+    """Try to capture DOM content using direct HTTP requests to the DevTools protocol"""
+    try:
+        import requests
+        
+        # Get list of tabs
+        tabs_response = requests.get(f"http://127.0.0.1:{port}/json/list", timeout=2)
+        if tabs_response.status_code != 200:
+            logging.warning(f"Could not get tab list: Status {tabs_response.status_code}")
+            return _create_minimal_placeholder("HTTP tabs request failed", "chrome://no-tabs-http")
+            
+        tabs = tabs_response.json()
+        if not tabs:
+            logging.warning("No tabs in HTTP response")
+            return _create_minimal_placeholder("No tabs found via HTTP", "chrome://no-tabs-http")
+            
+        # Find a suitable active tab
+        active_tab = None
+        for tab in tabs:
+            tab_url = tab.get('url', '')
+            if tab.get('type') == 'page' and not tab_url.startswith('chrome'):
+                # Prefer an actual web page (not Chrome internal)
+                if tab.get('webSocketDebuggerUrl'):
+                    active_tab = tab
+                    logging.info(f"Found suitable tab: {tab_url}")
+                    break
                     
-                # Get the list of tabs
-                tabs_response = requests.get(f"http://127.0.0.1:{port}/json/list", timeout=2)
-                if tabs_response.status_code != 200:
-                    logging.debug(f"Failed to get list of tabs on port {port}")
-                    continue
+        if not active_tab:
+            # Fallback to any first tab
+            active_tab = tabs[0]
+            logging.info(f"Falling back to first tab: {active_tab.get('url')}")
+            
+        # Extract tab info
+        tab_id = active_tab.get('id')
+        tab_url = active_tab.get('url', 'unknown')
+        websocket_url = active_tab.get('webSocketDebuggerUrl', '')
+        dev_frontend_url = active_tab.get('devtoolsFrontendUrl', '')
+        
+        logging.info(f"Attempting to capture DOM for tab: {tab_url}")
+        
+        # We'll try multiple endpoint patterns since Chrome's API can vary
+        endpoints = [
+            f"http://127.0.0.1:{port}/json/session/{tab_id}/execute",
+            f"http://localhost:{port}/json/session/{tab_id}/execute",
+            f"http://127.0.0.1:{port}/devtools/page/{tab_id}/execute",
+            f"http://localhost:{port}/devtools/page/{tab_id}/execute",
+            f"http://127.0.0.1:{port}/json/execute/{tab_id}",
+            f"http://localhost:{port}/json/execute/{tab_id}"
+        ]
+        
+        # HTML command to get the document HTML
+        html_cmd = {
+            "id": 1, 
+            "method": "Runtime.evaluate", 
+            "params": {
+                "expression": "document.documentElement.outerHTML", 
+                "returnByValue": True
+            }
+        }
+        
+        # Try each endpoint
+        for endpoint in endpoints:
+            try:
+                logging.info(f"Trying endpoint: {endpoint}")
+                response = requests.post(endpoint, json=html_cmd, timeout=2)
+                if response.status_code == 200:
+                    result = response.json()
+                    html_content = result.get('result', {}).get('result', {}).get('value', '')
                     
-                tabs = tabs_response.json()
-                if not tabs:
-                    logging.debug(f"No tabs found in browser on port {port}")
-                    continue
-                    
-                # Find the first real page tab (not DevTools, extensions, etc.)
-                active_tab = None
-                for tab in tabs:
-                    if tab.get('type') == 'page' and tab.get('url') and not tab.get('url').startswith('chrome'):
-                        active_tab = tab
-                        break
+                    if html_content and len(html_content) > 500:
+                        logging.info(f"Successfully captured DOM content via HTTP ({len(html_content)} bytes) using {endpoint}")
+                        # Get title for the HTML
+                        title_cmd = {"id": 2, "method": "Runtime.evaluate", "params": {"expression": "document.title", "returnByValue": True}}
+                        title_response = requests.post(endpoint, json=title_cmd, timeout=1)
+                        title = "Untitled Page"
+                        if title_response.status_code == 200:
+                            title_result = title_response.json()
+                            title = title_result.get('result', {}).get('result', {}).get('value', 'Untitled Page')
                         
-                # If no suitable tab found, try the first tab of any type as fallback
-                if not active_tab and tabs:
-                    active_tab = tabs[0]
-                    
-                if not active_tab:
-                    logging.debug(f"Could not find an active tab on port {port}")
-                    continue
-                    
-                logging.debug(f"Found active tab: {active_tab.get('title')} - {active_tab.get('url')}")
-                
-                # Now use pychrome to connect to this tab
-                browser = pychrome.Browser(url=f"http://127.0.0.1:{port}")
-                
-                # Get the tab by ID
-                tab_id = active_tab.get('id')
-                if not tab_id:
-                    logging.debug(f"Tab is missing ID on port {port}")
-                    continue
-                    
-                # Use the browser.list_tab() to get the actual tab object
-                browser_tabs = browser.list_tab()
-                target_tab = None
-                
-                for bt in browser_tabs:
-                    if hasattr(bt, 'id') and bt.id == tab_id:
-                        target_tab = bt
-                        break
-                        
-                if not target_tab:
-                    logging.debug(f"Could not find tab with ID {tab_id} in browser tabs on port {port}")
-                    continue
-                    
-                # Start the tab
-                target_tab.start()
-                
-                try:
-                    # Call Page.captureSnapshot - returns MHTML data
-                    logging.debug(f"Calling Page.captureSnapshot on port {port}...")
-                    snapshot_data = target_tab.call_method("Page.captureSnapshot", format='mhtml', _timeout=5)
-                    
-                    if snapshot_data and 'data' in snapshot_data:
-                        logging.info(f"Successfully captured DOM snapshot from {browser_name} on port {port} ({len(snapshot_data['data'])} bytes)")
-                        return snapshot_data.get('data')
-                    else:
-                        logging.debug(f"CDP: captureSnapshot returned empty or invalid data on port {port}")
-                        continue
-                finally:
-                    target_tab.stop()
-                    
-            except (requests.exceptions.ConnectionError, pychrome.exceptions.TimeoutException, websocket.WebSocketException) as e:
-                logging.debug(f"CDP connection/capture failed on port {port}: {e}")
+                        return f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>{title}</title>
+    <meta charset="utf-8">
+    <meta name="url" content="{tab_url}">
+</head>
+<body>
+{html_content}
+</body>
+</html>"""
+            except Exception as e:
+                logging.warning(f"Endpoint {endpoint} failed: {str(e)}")
                 continue
-                
+        
+        # Last attempt - try the Page.captureSnapshot method
+        snapshot_url = f"http://127.0.0.1:{port}/json/protocol/Page.captureSnapshot"
+        try:
+            response = requests.post(snapshot_url, json={"method": "Page.captureSnapshot"}, timeout=3)
+            if response.status_code == 200:
+                snapshot_data = response.json()
+                if snapshot_data.get('result', {}).get('data'):
+                    logging.info("Successfully captured Page.captureSnapshot via HTTP")
+                    return snapshot_data['result']['data']
         except Exception as e:
-            logging.debug(f"Unexpected error during CDP capture on port {port}: {e}")
-            continue
-    
-    # If we get here, all ports failed
-    logging.warning("Failed to capture DOM from any Chromium browser")
-    return None
+            logging.warning(f"Page.captureSnapshot failed: {str(e)}")
+            
+        # All attempts failed - create a placeholder
+        logging.warning(f"All HTTP capture attempts failed for {tab_url}")
+        return _create_minimal_placeholder(f"HTTP capture failed for {tab_url}", tab_url)
+    except Exception as e:
+        logging.error(f"HTTP capture failed: {str(e)}")
+        return _create_minimal_placeholder(str(e), "error://http-capture-failed")
+
+def _create_minimal_placeholder(reason, url):
+    """Create a minimal HTML placeholder when capture fails"""
+    logging.warning(f"Created minimal placeholder for {url}")
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>DuckTrack DOM Capture Placeholder</title>
+    <meta charset="utf-8">
+    <meta name="url" content="{url}">
+    <meta name="capture-error" content="{reason}">
+</head>
+<body>
+    <h1>DOM Capture Failed</h1>
+    <p>URL: {url}</p>
+    <p>Reason: {reason}</p>
+    <p>Time: {datetime.now().isoformat()}</p>
+</body>
+</html>"""
+
+def _is_port_available(port):
+    """Check if a browser debugging port is available and responding"""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.3)
+            if sock.connect_ex(('127.0.0.1', port)) == 0:
+                try:
+                    import requests
+                    # Try 127.0.0.1 first
+                    response = requests.get(f"http://127.0.0.1:{port}/json/version", timeout=0.5)
+                    if response.status_code == 200:
+                        browser_info = response.json()
+                        logging.info(f"Found browser debugging port: {port} ({browser_info.get('Browser')})")
+                        return True
+                except Exception:
+                    # Try with localhost as fallback
+                    try:
+                        response = requests.get(f"http://localhost:{port}/json/version", timeout=0.5)
+                        if response.status_code == 200:
+                            return True
+                    except Exception:
+                        pass
+        return False
+    except Exception:
+        return False
