@@ -668,6 +668,10 @@ class Recorder(QThread):
     def __init__(self, natural_scrolling: bool):
         super().__init__()
         
+        # Reset shutdown flag to ensure new recording path is created correctly
+        global SHUTDOWN_IN_PROGRESS
+        SHUTDOWN_IN_PROGRESS = False
+        
         if system() == "Windows":
             fix_windows_dpi_scaling()
             
@@ -886,10 +890,6 @@ class Recorder(QThread):
         self.current_window_id = None
         self.last_window_id = None
         
-        # Reset shutdown flag to ensure new recording path is created correctly
-        global SHUTDOWN_IN_PROGRESS
-        SHUTDOWN_IN_PROGRESS = False
-
         try:
             self.events_file = open(os.path.join(self.recording_path, "events.jsonl"), "a")
 
