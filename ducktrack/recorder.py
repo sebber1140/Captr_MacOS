@@ -675,6 +675,7 @@ class Recorder(QThread):
         if system() == "Windows":
             fix_windows_dpi_scaling()
             
+        # Get a fresh recording path after resetting the shutdown flag
         self.recording_path = self._get_recording_path()
         self.mouse_buttons_pressed = set()
         self.natural_scrolling = natural_scrolling
@@ -767,6 +768,7 @@ class Recorder(QThread):
     def on_click(self, x, y, button, pressed):
         """Process mouse click events and capture DOM/accessibility data"""
         if not self._is_paused:
+            # Make sure we're properly logging button types for debugging
             logging.info(f"Mouse {'press' if pressed else 'release'} detected at ({x},{y}) - button: {button.name}")
             
             if pressed:
@@ -788,6 +790,32 @@ class Recorder(QThread):
 
             # ONLY process captures on mouse RELEASE events (not press) to reduce duplicate captures
             if not pressed and (button.name == 'left' or button.name == 'right') and self.capture_data_path:
+                # Always capture a DOM snapshot immediately on click to ensure we don't miss page transitions
+                # This prevents missing DOM captures when navigating to new pages
+                url, title = self._get_active_tab_url_title() or ("", "")
+                if url and url != "about:blank":
+                    logging.info(f"Immediate DOM capture on {button.name} click at ({x},{y}) to ensure page transition is captured")
+                    try:
+                        # Capture even if cooldown would normally prevent it - using special capture type
+                        # that bypasses cooldown checks
+                        self._immediate_dom_capture(
+                            url=url,
+                            title=title,
+                            capture_type=f"click_immediate_{button.name}",
+                            x=x,
+                            y=y,
+                            button=button.name
+                        )
+                        
+                        # Check if this might be a bookmark click (usually in the upper part of the browser window)
+                        # Google Chrome: bookmarks are usually in the top ~100px of the window
+                        # If it's potentially a bookmark click, schedule an additional capture
+                        if y < 100:  # Simplified heuristic for bookmark area
+                            logging.info(f"Detected possible bookmark click at y={y}, scheduling extra capture")
+                            self._schedule_bookmark_capture(x, y, button.name)
+                    except Exception as e:
+                        logging.error(f"Error in immediate DOM capture: {e}")
+                
                 # Use the actual button name in the capture_type
                 button_type = button.name.lower()  # 'left' or 'right'
                 
@@ -832,9 +860,6 @@ class Recorder(QThread):
                             logging.info(f"No accessibility tree available for {button_type} click")
                     else:
                         logging.info(f"Skipping a11y tree capture - cooldown period active ({current_time - self.last_a11y_capture_time:.2f}s < {self.a11y_capture_cooldown}s)")
-                    
-                    # Get URL and title for DOM capture
-                    url, title = self._get_active_tab_url_title() or ("", "")
                     
                     # Record DOM snapshot using specific capture type with button name
                     dom_path = self._smart_dom_capture(
@@ -1266,28 +1291,31 @@ class Recorder(QThread):
             # Generate a URL hash to detect same pages even with different URL params
             url_hash = hashlib.md5(url.encode()).hexdigest()[:8] if url else None
             
-            # Skip if we just captured this exact URL hash very recently (unless it's a page change)
-            if url_hash == self.last_dom_url_hash and not capture_type.startswith("page_change"):
-                time_since_last_capture = current_time - self.last_dom_capture_time
-                if time_since_last_capture < self.dom_capture_cooldown * 0.5:  # Use stricter cooldown for same URL hash
-                    logging.info(f"Skipping DOM capture for {url_hash} - very recent duplicate ({time_since_last_capture:.2f}s < {self.dom_capture_cooldown * 0.5}s)")
-                    return None
-            
-            # Check if we've captured too recently for this URL
-            if url in self.last_dom_capture_time_by_url:
-                time_since_last_capture = current_time - self.last_dom_capture_time_by_url[url]
-                # If this is a click on the same URL and it's been less than cooldown seconds, skip capturing
-                if capture_type.startswith("click_") and time_since_last_capture < self.dom_capture_cooldown:
-                    logging.info(f"Skipping DOM capture for {url} - cooldown period active ({time_since_last_capture:.2f}s < {self.dom_capture_cooldown}s)")
-                    return None
-            
-            # Special case for page_change - always capture those
-            # For clicks, check if we already captured this URL recently
-            if not capture_type.startswith("page_change") and url == self.last_captured_url:
-                # If the last capture was too recent, skip this one
-                if current_time - self.last_dom_capture_time_by_url.get(url, 0) < self.dom_capture_cooldown:
-                    logging.info(f"Skipping DOM capture for click on same URL ({url}), captured too recently")
-                    return None
+            # Skip cooldown checks for "immediate" capture types - these are special captures to ensure
+            # we don't miss page transitions
+            if "immediate" not in capture_type:
+                # Skip if we just captured this exact URL hash very recently (unless it's a page change)
+                if url_hash == self.last_dom_url_hash and not capture_type.startswith("page_change"):
+                    time_since_last_capture = current_time - self.last_dom_capture_time
+                    if time_since_last_capture < self.dom_capture_cooldown * 0.5:  # Use stricter cooldown for same URL hash
+                        logging.info(f"Skipping DOM capture for {url_hash} - very recent duplicate ({time_since_last_capture:.2f}s < {self.dom_capture_cooldown * 0.5}s)")
+                        return None
+                
+                # Check if we've captured too recently for this URL
+                if url in self.last_dom_capture_time_by_url:
+                    time_since_last_capture = current_time - self.last_dom_capture_time_by_url[url]
+                    # If this is a click on the same URL and it's been less than cooldown seconds, skip capturing
+                    if capture_type.startswith("click_") and time_since_last_capture < self.dom_capture_cooldown:
+                        logging.info(f"Skipping DOM capture for {url} - cooldown period active ({time_since_last_capture:.2f}s < {self.dom_capture_cooldown}s)")
+                        return None
+                
+                # Special case for page_change - always capture those
+                # For clicks, check if we already captured this URL recently
+                if not capture_type.startswith("page_change") and url == self.last_captured_url:
+                    # If the last capture was too recent, skip this one
+                    if current_time - self.last_dom_capture_time_by_url.get(url, 0) < self.dom_capture_cooldown:
+                        logging.info(f"Skipping DOM capture for click on same URL ({url}), captured too recently")
+                        return None
             
             # Skip empty or about:blank pages
             if not url or url == "about:blank" or not title:
@@ -1622,7 +1650,7 @@ class Recorder(QThread):
                             if not self._is_recording or self._is_paused or not self.is_chromium_focused:
                                 return
                                 
-                            logging.info(f"Final attempt to capture DOM after click at ({x},{y})")
+                            logging.info(f"Final attempt to capture DOM after {button_name} click at ({x},{y})")
                             snapshot_mhtml = capture_chromium_dom_snapshot()
                             
                             if snapshot_mhtml and len(snapshot_mhtml) > 5000:
@@ -1640,7 +1668,7 @@ class Recorder(QThread):
                                     
                                 timestamp = time.perf_counter()
                                 self.last_dom_capture_time = timestamp
-                                filename = f"dom_click_final_{timestamp:.6f}.mhtml"
+                                filename = f"dom_click_{button_name}_final_{timestamp:.6f}.mhtml"
                                 filepath = os.path.join(self.capture_data_path, filename)
                                 
                                 with open(filepath, 'w', encoding='utf-8') as f:
@@ -1667,7 +1695,7 @@ class Recorder(QThread):
                 except Exception as e:
                     logging.error(f"Failed to schedule final click capture: {e}")
             
-            logging.info(f"Performing delayed DOM capture after click at ({x},{y})")
+            logging.info(f"Performing delayed DOM capture after {button_name} click at ({x},{y})")
             snapshot_mhtml = capture_chromium_dom_snapshot()
             
             if snapshot_mhtml and len(snapshot_mhtml) > 5000:  # Increased minimum content requirement
@@ -1685,7 +1713,7 @@ class Recorder(QThread):
                 
                 timestamp = time.perf_counter()
                 self.last_dom_capture_time = timestamp
-                filename = f"dom_click_delayed_{timestamp:.6f}.mhtml"
+                filename = f"dom_click_{button_name}_delayed_{timestamp:.6f}.mhtml"
                 filepath = os.path.join(self.capture_data_path, filename)
                 
                 with open(filepath, 'w', encoding='utf-8') as f:
@@ -1813,7 +1841,21 @@ class Recorder(QThread):
     def stop_recording(self):
         if self._is_recording:
             logging.info("Stopping recording...")
-            # Set global shutdown flag to prevent new folder creation during cleanup
+            
+            # Record a final stop event before setting the shutdown flag
+            try:
+                stop_event = {
+                    "time_stamp": time.perf_counter(),
+                    "action": "stop_recording"
+                }
+                self.event_queue.put(stop_event, block=False)
+                # Try to flush immediately
+                if self.events_file and not self.events_file.closed:
+                    self.events_file.flush()
+            except Exception as e:
+                logging.error(f"Error recording final stop event: {e}")
+                
+            # Now set global shutdown flag to prevent new folder creation during cleanup
             global SHUTDOWN_IN_PROGRESS
             SHUTDOWN_IN_PROGRESS = True
             self._is_recording = False
@@ -2378,6 +2420,142 @@ class Recorder(QThread):
         except Exception as e:
             logging.error(f"Error in _get_active_tab_url_title: {e}")
             return None
+
+    def _immediate_dom_capture(self, url, title, capture_type, x=None, y=None, button=None):
+        """Capture DOM snapshot immediately after click, bypassing cooldown and duplicate checks.
+        This ensures we capture transitions even with similar content or rapid navigation."""
+        # Don't capture if recording is paused or we're not in a browser
+        if not self._is_recording or self._is_paused or not self.is_chromium_focused:
+            return None
+            
+        logging.info(f"Starting immediate DOM capture for {capture_type} (URL: {url})")
+        
+        # Skip empty or about:blank pages
+        if not url or url == "about:blank" or not title:
+            logging.info(f"Skipping immediate DOM capture for empty/blank page: {url}")
+            return None
+        
+        # Attempt to capture the DOM snapshot
+        port = self._find_chrome_debugging_port()
+        if not port:
+            logging.warning("No Chrome debugging port found for immediate capture")
+            return None
+            
+        try:
+            # Capture the DOM snapshot
+            snapshot_data = capture_chromium_dom_snapshot(port)
+            
+            if not snapshot_data or snapshot_data == "{}":
+                logging.warning("Empty DOM snapshot returned in immediate capture")
+                return None
+                
+            # Generate a URL hash for the filename
+            current_time = time.perf_counter()
+            url_hash = hashlib.md5(url.encode()).hexdigest()[:8] if url else None
+                
+            # Create the folder for DOM snapshots if it doesn't exist
+            os.makedirs(self.capture_data_path, exist_ok=True)
+            
+            # Create a unique filename
+            dom_file = f"dom_{capture_type}_{url_hash}_{current_time:.6f}.mhtml"
+            dom_file_path = os.path.join(self.capture_data_path, dom_file)
+            
+            # Save the DOM snapshot
+            with open(dom_file_path, 'w', encoding='utf-8') as f:
+                f.write(snapshot_data)
+                
+            # Log the capture
+            logging.info(f"Immediate DOM snapshot captured: {dom_file_path}")
+            
+            # Update the event with the DOM snapshot info
+            self._add_dom_event(dom_file_path, url, title, True, capture_type, x, y, button)
+            
+            return dom_file_path
+            
+        except Exception as e:
+            logging.error(f"Error capturing immediate DOM snapshot: {e}")
+            return None
+
+    def _schedule_bookmark_capture(self, x, y, button_name):
+        """Schedule a capture sequence specifically for bookmark clicks.
+        This adds additional capture attempts to ensure we don't miss navigation from bookmarks."""
+        try:
+            import threading
+            logging.info("Scheduling a single delayed capture for bookmark click...")
+            
+            # Use only a single capture with sufficient delay for bookmark clicks (3.0 seconds)
+            # instead of multiple captures at different times
+            capture_thread = threading.Timer(
+                3.0, 
+                lambda: self._bookmark_capture_attempt(x, y, button_name, 3.0)
+            )
+            capture_thread.daemon = True
+            capture_thread.start()
+                
+        except Exception as e:
+            logging.error(f"Error scheduling bookmark capture: {e}")
+    
+    def _bookmark_capture_attempt(self, x, y, button_name, delay):
+        """Attempt to capture DOM at a specific delay after a suspected bookmark click."""
+        if not self._is_recording or self._is_paused:
+            return
+            
+        try:
+            # Get current URL and title
+            url, title = self._get_active_tab_url_title() or ("", "")
+            if not url or url == "about:blank":
+                logging.info(f"Bookmark capture at {delay}s delay: page not available")
+                return
+                
+            logging.info(f"Performing bookmark capture at {delay}s delay for URL: {url}")
+            
+            # Attempt to capture DOM - use a special capture type for bookmark clicks
+            dom_path = self._immediate_dom_capture(
+                url=url,
+                title=title,
+                capture_type=f"bookmark_click",
+                x=x,
+                y=y,
+                button=button_name
+            )
+            
+            if dom_path:
+                logging.info(f"Successful bookmark DOM capture at {delay}s delay: {dom_path}")
+            else:
+                logging.info(f"Bookmark DOM capture at {delay}s delay failed")
+                
+        except Exception as e:
+            logging.error(f"Error in bookmark capture attempt: {e}")
+
+    def _verify_page_is_loaded(self):
+        """Verify if page is loaded by checking readyState"""
+        try:
+            port = self._find_chrome_debugging_port()
+            if not port:
+                return False
+                
+            import pychrome
+            browser = pychrome.Browser(url=f"http://127.0.0.1:{port}")
+            tabs = browser.list_tab()
+            if not tabs:
+                return False
+                
+            tab = tabs[0]
+            tab.start()
+            
+            try:
+                result = tab.call_method("Runtime.evaluate", 
+                                       expression="document.readyState",
+                                       returnByValue=True)
+                if result and 'result' in result and 'value' in result['result']:
+                    return result['result']['value'] == 'complete'
+            finally:
+                tab.stop()
+                
+            return False
+        except Exception as e:
+            logging.error(f"Error verifying page loaded state: {e}")
+            return False
 
 # --- Helper function for CDP DOM Snapshot ---
 def capture_chromium_dom_snapshot(port=9222):
