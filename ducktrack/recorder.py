@@ -807,12 +807,16 @@ class Recorder(QThread):
                             button=button.name
                         )
                         
-                        # Check if this might be a bookmark click (usually in the upper part of the browser window)
-                        # Google Chrome: bookmarks are usually in the top ~100px of the window
-                        # If it's potentially a bookmark click, schedule an additional capture
-                        if y < 100:  # Simplified heuristic for bookmark area
-                            logging.info(f"Detected possible bookmark click at y={y}, scheduling extra capture")
-                            self._schedule_bookmark_capture(x, y, button.name)
+                        # Instead of checking for bookmarks based on Y position, use a single delayed capture
+                        # for all clicks to properly capture page transitions
+                        import threading
+                        delayed_thread = threading.Timer(
+                            3.0,  # Single 3-second delay to catch page transitions
+                            lambda: self._delayed_click_capture(x, y, button.name)
+                        )
+                        delayed_thread.daemon = True
+                        delayed_thread.start()
+                        logging.info(f"Scheduled single delayed capture for {button.name} click")
                     except Exception as e:
                         logging.error(f"Error in immediate DOM capture: {e}")
                 
@@ -1668,6 +1672,7 @@ class Recorder(QThread):
                                     
                                 timestamp = time.perf_counter()
                                 self.last_dom_capture_time = timestamp
+                                # Use a clearer naming convention without duration-based suffixes
                                 filename = f"dom_click_{button_name}_final_{timestamp:.6f}.mhtml"
                                 filepath = os.path.join(self.capture_data_path, filename)
                                 
@@ -1713,6 +1718,7 @@ class Recorder(QThread):
                 
                 timestamp = time.perf_counter()
                 self.last_dom_capture_time = timestamp
+                # Use a clearer naming convention without cryptic duration suffixes
                 filename = f"dom_click_{button_name}_delayed_{timestamp:.6f}.mhtml"
                 filepath = os.path.join(self.capture_data_path, filename)
                 
@@ -1735,17 +1741,8 @@ class Recorder(QThread):
             logging.error(f"Error in delayed DOM capture: {e}")
 
     def _schedule_delayed_capture(self, x, y, button_name):
-        """Schedule a delayed capture after a click"""
-        try:
-            import threading
-            logging.info("Scheduling a delayed capture after click in case page is changing...")
-            
-            # Increased delay to 1.5 seconds (from 0.8) to allow more time for page to load
-            delay_thread = threading.Timer(1.5, lambda: self._delayed_click_capture(x, y, button_name))
-            delay_thread.daemon = True
-            delay_thread.start()
-        except Exception as e:
-            logging.error(f"Error scheduling delayed capture: {e}")
+        """Legacy method - no longer used as we now schedule the delayed capture directly in on_click."""
+        pass
 
     def _cleanup(self):
         logging.debug("Recorder cleanup started.")
@@ -2477,55 +2474,14 @@ class Recorder(QThread):
             return None
 
     def _schedule_bookmark_capture(self, x, y, button_name):
-        """Schedule a capture sequence specifically for bookmark clicks.
-        This adds additional capture attempts to ensure we don't miss navigation from bookmarks."""
-        try:
-            import threading
-            logging.info("Scheduling a single delayed capture for bookmark click...")
-            
-            # Use only a single capture with sufficient delay for bookmark clicks (3.0 seconds)
-            # instead of multiple captures at different times
-            capture_thread = threading.Timer(
-                3.0, 
-                lambda: self._bookmark_capture_attempt(x, y, button_name, 3.0)
-            )
-            capture_thread.daemon = True
-            capture_thread.start()
-                
-        except Exception as e:
-            logging.error(f"Error scheduling bookmark capture: {e}")
-    
+        """Legacy method - no longer used as bookmark-specific logic was removed.
+        All clicks now use a single delayed capture approach instead of special bookmark detection."""
+        pass
+        
     def _bookmark_capture_attempt(self, x, y, button_name, delay):
-        """Attempt to capture DOM at a specific delay after a suspected bookmark click."""
-        if not self._is_recording or self._is_paused:
-            return
-            
-        try:
-            # Get current URL and title
-            url, title = self._get_active_tab_url_title() or ("", "")
-            if not url or url == "about:blank":
-                logging.info(f"Bookmark capture at {delay}s delay: page not available")
-                return
-                
-            logging.info(f"Performing bookmark capture at {delay}s delay for URL: {url}")
-            
-            # Attempt to capture DOM - use a special capture type for bookmark clicks
-            dom_path = self._immediate_dom_capture(
-                url=url,
-                title=title,
-                capture_type=f"bookmark_click",
-                x=x,
-                y=y,
-                button=button_name
-            )
-            
-            if dom_path:
-                logging.info(f"Successful bookmark DOM capture at {delay}s delay: {dom_path}")
-            else:
-                logging.info(f"Bookmark DOM capture at {delay}s delay failed")
-                
-        except Exception as e:
-            logging.error(f"Error in bookmark capture attempt: {e}")
+        """Legacy method - no longer used as bookmark-specific logic was removed.
+        All clicks now use a single delayed capture approach instead of special bookmark detection."""
+        pass
 
     def _verify_page_is_loaded(self):
         """Verify if page is loaded by checking readyState"""
