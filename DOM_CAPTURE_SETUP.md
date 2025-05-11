@@ -182,3 +182,35 @@ We've included several debugging tools to help troubleshoot capture issues:
 ## Need More Help?
 
 If you're still having issues with DOM or accessibility tree capture, please check the application logs or submit an issue on our GitHub repository with the specific error messages you're seeing. 
+
+## Known Privacy Limitations
+
+Some websites and applications employ security mechanisms that intentionally limit what can be captured via the Chrome DevTools Protocol (CDP):
+
+### Google Docs & Similar Web Apps
+
+Google Docs and similar web-based document editors use:
+- Canvas-based rendering instead of standard DOM text elements
+- Content Security Policies (CSP) that restrict access to the actual document content
+- Custom rendering engines that don't expose content in the standard DOM
+
+When capturing these sites, you'll typically see the UI framework but minimal or no actual document content. This is expected behavior and is part of these applications' security design.
+
+### Banking & Financial Services
+
+Financial websites often implement:
+- Anti-scraping technologies
+- Dynamic content obfuscation
+- Strict Content Security Policies
+- Input field masking
+
+### Technical Reasons for Limitations
+
+From a technical perspective, these limitations exist because:
+1. **Canvas Rendering:** Content rendered to HTML5 canvas elements isn't accessible via the DOM tree
+2. **Shadow DOM Isolation:** Components using Shadow DOM may not expose their internal structure
+3. **iframes with Different Origins:** Content in cross-origin iframes is protected due to same-origin policy
+4. **JavaScript Obfuscation:** Some sites dynamically generate and transform content via obfuscated JavaScript
+5. **Browser Security Features:** Browsers intentionally limit what information is exposed via debugging interfaces
+
+These limitations are privacy and security features, not bugs in DuckTrack's capture mechanism. 

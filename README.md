@@ -156,6 +156,22 @@ To prevent redundant captures and save disk space:
 
 For more details on setting up and troubleshooting these features, see [DOM_CAPTURE_SETUP.md](DOM_CAPTURE_SETUP.md).
 
+### Privacy Considerations and Limitations
+
+DuckTrack respects privacy mechanisms built into websites and applications. Be aware of these important limitations:
+
+1. **Google Docs & Office Web Apps:** These applications use advanced rendering techniques and security mechanisms that prevent DOM content extraction. When capturing Google Docs pages, the text content will typically appear blank or minimal in DOM captures for privacy/security reasons.
+
+2. **Banking & Financial Sites:** Many banking websites implement content security policies and anti-scraping techniques that may limit what appears in DOM captures.
+
+3. **Browser Extensions:** Pages within extension contexts often won't capture properly.
+
+4. **Private/Incognito Mode:** Some browsers may restrict debugging connections in private/incognito windows.
+
+5. **Login Forms:** Password fields are typically masked in DOM captures as part of browser security.
+
+These limitations are by design and represent the privacy/security mechanisms of the respective applications rather than issues with DuckTrack itself.
+
 ## Things To Do
 
 - Testing
