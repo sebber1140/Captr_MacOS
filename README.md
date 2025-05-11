@@ -125,6 +125,37 @@ Here is a [sample recording](example) for further reference.
 - Mouse movement is not captured when the current application is using raw input, i.e. video games.
 - OBS may not open in the background properly on some Linux machines.
 
+## DOM and Accessibility Tree Captures
+
+DuckTrack automatically captures DOM snapshots from browsers and accessibility trees from native applications during recording to provide contextual data about what you're interacting with.
+
+### DOM Capture Triggers
+
+DOM snapshots are captured when the following events occur:
+
+1. **Mouse Clicks**: A DOM snapshot is taken immediately when you click (left or right) within a Chromium-based browser
+2. **Delayed Captures**: An additional capture happens 3 seconds after clicks to catch page transitions
+3. **Key Presses**: When you press important keys like Enter, Tab, arrow keys, Escape, etc.
+4. **Page Changes**: When you navigate to a new page or URL
+5. **Periodic Captures**: Every 30 seconds to ensure continuous coverage
+
+### Accessibility Tree Capture Triggers (macOS only)
+
+Accessibility trees are captured when:
+
+1. **Mouse Clicks**: When clicking within native applications
+2. **Key Presses**: When pressing navigation keys (Enter, Tab, arrows) or modifier keys (Shift, Ctrl, Alt/Option, Command)
+
+### Deduplication Logic
+
+To prevent redundant captures and save disk space:
+
+1. Snapshots are compared using content hashing - identical content is not duplicated
+2. A cooldown period (2-5 seconds) prevents too many captures of the same content
+3. Similar URLs are detected to avoid duplicate captures of pages with minor URL differences
+
+For more details on setting up and troubleshooting these features, see [DOM_CAPTURE_SETUP.md](DOM_CAPTURE_SETUP.md).
+
 ## Things To Do
 
 - Testing

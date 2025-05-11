@@ -16,6 +16,10 @@ import hashlib
 import filelock # Add filelock for thread safety
 import tempfile
 import threading
+import string
+import traceback
+import urllib.parse
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from pynput import keyboard, mouse
 from pynput.keyboard import KeyCode
@@ -656,6 +660,33 @@ original_tab_recv_loop = pychrome.Tab._recv_loop
 # We'll revert to a simpler approach without modifying pychrome's internals
 pychrome.Tab._recv_loop = original_tab_recv_loop
 
+# Global variable to track last capture time for each domain
+LAST_DOMAIN_CAPTURE_TIMESTAMP = {}
+
+"""
+Add Levenshtein distance function to help with URL deduplication
+"""
+def levenshtein_distance(s1, s2):
+    """Calculate the Levenshtein distance between two strings."""
+    if len(s1) < len(s2):
+        return levenshtein_distance(s2, s1)
+
+    # len(s1) >= len(s2)
+    if len(s2) == 0:
+        return len(s1)
+
+    previous_row = range(len(s2) + 1)
+    for i, c1 in enumerate(s1):
+        current_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+            current_row.append(min(insertions, deletions, substitutions))
+        previous_row = current_row
+
+    return previous_row[-1]
+
 class Recorder(QThread):
     """
     Makes recordings.
@@ -788,47 +819,48 @@ class Recorder(QThread):
                 "dom_snapshot": None
             }
 
-            # ONLY process captures on mouse RELEASE events (not press) to reduce duplicate captures
+            # ONLY process captures on mouse RELEASE events (not press)
             if not pressed and (button.name == 'left' or button.name == 'right') and self.capture_data_path:
-                # Always capture a DOM snapshot immediately on click to ensure we don't miss page transitions
-                # This prevents missing DOM captures when navigating to new pages
+                # Process DOM capture on click release
+                button_type = button.name.lower()  # 'left' or 'right'
                 url, title = self._get_active_tab_url_title() or ("", "")
+                
                 if url and url != "about:blank":
-                    logging.info(f"Immediate DOM capture on {button.name} click at ({x},{y}) to ensure page transition is captured")
+                    logging.info(f"DOM capture on {button_type} click at ({x},{y})")
+                    
+                    # FIRST: Capture DOM immediately to avoid missing transitions
                     try:
-                        # Capture even if cooldown would normally prevent it - using special capture type
-                        # that bypasses cooldown checks
-                        self._immediate_dom_capture(
+                        # Do immediate capture with simple naming
+                        dom_path = self._immediate_dom_capture(
                             url=url,
                             title=title,
-                            capture_type=f"click_immediate_{button.name}",
+                            capture_type=f"click_{button_type}",
                             x=x,
                             y=y,
-                            button=button.name
+                            button=button_type
                         )
                         
-                        # Instead of checking for bookmarks based on Y position, use a single delayed capture
-                        # for all clicks to properly capture page transitions
+                        # Add the DOM path to click event if capture successful
+                        if dom_path:
+                            click_event["dom_snapshot"] = dom_path
+                        
+                        # SECOND: Schedule a single delayed capture to catch page loads
                         import threading
                         delayed_thread = threading.Timer(
-                            3.0,  # Single 3-second delay to catch page transitions
-                            lambda: self._delayed_click_capture(x, y, button.name)
+                            3.0,  # 3-second delay to catch transitions
+                            lambda: self._delayed_click_capture(x, y, button_type)
                         )
                         delayed_thread.daemon = True
                         delayed_thread.start()
-                        logging.info(f"Scheduled single delayed capture for {button.name} click")
+                        logging.info(f"Scheduled single delayed capture for {button_type} click")
                     except Exception as e:
-                        logging.error(f"Error in immediate DOM capture: {e}")
+                        logging.error(f"Error in DOM capture: {e}")
                 
-                # Use the actual button name in the capture_type
-                button_type = button.name.lower()  # 'left' or 'right'
-                
-                # Capture accessibility tree on macOS with less frequency (only for specific events)
+                # Capture accessibility tree on macOS with proper frequency control
                 if system() == "Darwin" and HAS_PYOBJC:
                     current_time = time.perf_counter()
-                    # Check if enough time has elapsed since last a11y tree capture
                     if current_time - self.last_a11y_capture_time >= self.a11y_capture_cooldown:
-                        logging.info(f"Capturing accessibility tree for {button_type} mouse release")
+                        logging.info(f"Capturing accessibility tree for {button_type} click")
                         tree = capture_macos_accessibility_tree()
                         if tree:
                             try:
@@ -840,17 +872,14 @@ class Recorder(QThread):
                                 if tree_hash == self.last_a11y_content_hash:
                                     logging.info(f"Skipping duplicate a11y tree capture (hash: {tree_hash[:8]})")
                                 else:
-                                    # Create directory for accessibility trees if it doesn't exist
+                                    # Create directory if needed and save tree
                                     os.makedirs(self.capture_data_path, exist_ok=True)
-                                    
-                                    # Construct the filename for the accessibility tree JSON file
                                     a11y_file = os.path.join(self.capture_data_path, f"a11y_{button_type}_click_{current_time:.6f}.json")
                                     
-                                    # Save the tree to a file
                                     with open(a11y_file, 'w', encoding='utf-8') as f:
                                         f.write(json.dumps(tree))
                                     
-                                    logging.info(f"Captured accessibility tree on {button_type} click: {a11y_file}")
+                                    logging.info(f"Captured accessibility tree: {a11y_file}")
                                     
                                     # Update tracking info
                                     self.last_a11y_content_hash = tree_hash
@@ -863,23 +892,10 @@ class Recorder(QThread):
                         else:
                             logging.info(f"No accessibility tree available for {button_type} click")
                     else:
-                        logging.info(f"Skipping a11y tree capture - cooldown period active ({current_time - self.last_a11y_capture_time:.2f}s < {self.a11y_capture_cooldown}s)")
-                    
-                    # Record DOM snapshot using specific capture type with button name
-                    dom_path = self._smart_dom_capture(
-                        url=url,
-                        title=title,
-                        capture_type=f"click_{button_type}_click",
-                        x=x,
-                        y=y,
-                        button=button_type
-                    )
-                    
-                    # Add the DOM snapshot path to the click event
-                    click_event["dom_snapshot"] = dom_path
-                
-                # Queue the click event
-                self.event_queue.put(click_event, block=False)
+                        logging.info(f"Skipping a11y tree capture - cooldown period active")
+            
+            # Queue the click event
+            self.event_queue.put(click_event, block=False)
 
     def on_scroll(self, x, y, dx, dy):
         if not self._is_paused:
@@ -1642,101 +1658,53 @@ class Recorder(QThread):
             
             # Verify page is loaded now
             is_loaded = self._verify_page_is_loaded()
-            if not is_loaded:
-                logging.warning("Page still not fully loaded after delay")
+            url, title = self._get_active_tab_url_title() or ("", "")
+            
+            if not url or url == "about:blank":
+                logging.info("Not capturing delayed DOM - no valid URL")
+                return
                 
-                # Add one final attempt with longer delay for complex pages
-                try:
-                    import threading
-                    
-                    def final_click_capture():
-                        try:
-                            if not self._is_recording or self._is_paused or not self.is_chromium_focused:
-                                return
-                                
-                            logging.info(f"Final attempt to capture DOM after {button_name} click at ({x},{y})")
-                            snapshot_mhtml = capture_chromium_dom_snapshot()
-                            
-                            if snapshot_mhtml and len(snapshot_mhtml) > 5000:
-                                # Check for duplicate
-                                content_hash = hashlib.md5(snapshot_mhtml.encode()[:50000]).hexdigest()
-                                if content_hash in self.recent_dom_hashes:
-                                    logging.info(f"Skipping duplicate final DOM snapshot (hash: {content_hash[:8]})")
-                                    return
-                                
-                                # Add to recent hashes
-                                self.recent_dom_hashes.append(content_hash)
-                                # Maintain limited size
-                                if len(self.recent_dom_hashes) > RECENT_DOM_HASH_CAPACITY:
-                                    self.recent_dom_hashes.pop(0)
-                                    
-                                timestamp = time.perf_counter()
-                                self.last_dom_capture_time = timestamp
-                                # Use a clearer naming convention without duration-based suffixes
-                                filename = f"dom_click_{button_name}_final_{timestamp:.6f}.mhtml"
-                                filepath = os.path.join(self.capture_data_path, filename)
-                                
-                                with open(filepath, 'w', encoding='utf-8') as f:
-                                    f.write(snapshot_mhtml)
-                                logging.info(f"Final DOM snapshot saved to: {filepath}")
-                                
-                                # Add an update event to the queue
-                                update_event = {
-                                    "time_stamp": timestamp,
-                                    "action": "final_dom_capture",
-                                    "dom_snapshot": filepath,
-                                    "original_x": x,
-                                    "original_y": y,
-                                    "button": button_name
-                                }
-                                self.event_queue.put(update_event, block=False)
-                        except Exception as e:
-                            logging.error(f"Error in final click DOM capture: {e}")
-                    
-                    # Try one more time after another 2 seconds
-                    final_thread = threading.Timer(2.0, final_click_capture)
-                    final_thread.daemon = True
-                    final_thread.start()
-                except Exception as e:
-                    logging.error(f"Failed to schedule final click capture: {e}")
-            
-            logging.info(f"Performing delayed DOM capture after {button_name} click at ({x},{y})")
-            snapshot_mhtml = capture_chromium_dom_snapshot()
-            
-            if snapshot_mhtml and len(snapshot_mhtml) > 5000:  # Increased minimum content requirement
-                # Check if duplicate
-                content_hash = hashlib.md5(snapshot_mhtml.encode()[:50000]).hexdigest()
-                if content_hash in self.recent_dom_hashes:
-                    logging.info(f"Skipping duplicate delayed DOM snapshot (hash: {content_hash[:8]})")
+            # Check if this URL matches the last URL we captured
+            # Use levenshtein distance to compare URLs to avoid capturing nearly identical pages
+            last_url = getattr(self, '_last_captured_url', '')
+            if last_url and url and levenshtein_distance(url, last_url) < 5:
+                # URLs are very similar, check when the last capture was
+                now = time.perf_counter()
+                time_since_last_capture = now - getattr(self, '_last_url_capture_time', 0)
+                
+                # If we captured a very similar URL in the last 3 seconds, skip this one
+                if time_since_last_capture < 3.0:
+                    logging.info(f"Skipping delayed DOM capture - similar URL captured {time_since_last_capture:.2f}s ago")
                     return
-                
-                # Add to recent hashes
-                self.recent_dom_hashes.append(content_hash)
-                # Maintain limited size
-                if len(self.recent_dom_hashes) > RECENT_DOM_HASH_CAPACITY:
-                    self.recent_dom_hashes.pop(0)
-                
-                timestamp = time.perf_counter()
-                self.last_dom_capture_time = timestamp
-                # Use a clearer naming convention without cryptic duration suffixes
-                filename = f"dom_click_{button_name}_delayed_{timestamp:.6f}.mhtml"
-                filepath = os.path.join(self.capture_data_path, filename)
-                
-                with open(filepath, 'w', encoding='utf-8') as f:
-                    f.write(snapshot_mhtml)
-                logging.info(f"Delayed DOM snapshot after click saved to: {filepath}")
-                
-                # Add an update event to the queue
-                update_event = {
-                    "time_stamp": timestamp,
-                    "action": "delayed_dom_capture",
-                    "dom_snapshot": filepath,
-                    "original_x": x,
-                    "original_y": y,
-                    "button": button_name,
-                    "page_fully_loaded": is_loaded
-                }
-                self.event_queue.put(update_event, block=False)
+            
+            dom_path = self._capture_dom_snapshot(
+                url=url,
+                title=title,
+                capture_type=f"click_{button_name}_delayed",
+                x=x, 
+                y=y,
+                button=button_name,
+                is_mhtml=True
+            )
+            
+            # Update tracking variables for URL deduplication
+            self._last_captured_url = url
+            self._last_url_capture_time = time.perf_counter()
+            
+            logging.info(f"Delayed DOM capture completed: {os.path.basename(dom_path) if dom_path else 'failed'}")
+            
+            # Add delayed capture info to event log
+            event = {
+                "time_stamp": time.perf_counter(),
+                "action": "delayed_dom_capture",
+                "dom_snapshot": dom_path,
+                "original_x": x,
+                "original_y": y,
+                "button": button_name,
+                "page_fully_loaded": is_loaded
+            }
+            self.event_queue.put(event, block=False)
+            
         except Exception as e:
             logging.error(f"Error in delayed DOM capture: {e}")
 
@@ -2418,59 +2386,82 @@ class Recorder(QThread):
             logging.error(f"Error in _get_active_tab_url_title: {e}")
             return None
 
-    def _immediate_dom_capture(self, url, title, capture_type, x=None, y=None, button=None):
-        """Capture DOM snapshot immediately after click, bypassing cooldown and duplicate checks.
-        This ensures we capture transitions even with similar content or rapid navigation."""
-        # Don't capture if recording is paused or we're not in a browser
-        if not self._is_recording or self._is_paused or not self.is_chromium_focused:
-            return None
-            
-        logging.info(f"Starting immediate DOM capture for {capture_type} (URL: {url})")
-        
-        # Skip empty or about:blank pages
-        if not url or url == "about:blank" or not title:
-            logging.info(f"Skipping immediate DOM capture for empty/blank page: {url}")
-            return None
-        
-        # Attempt to capture the DOM snapshot
-        port = self._find_chrome_debugging_port()
-        if not port:
-            logging.warning("No Chrome debugging port found for immediate capture")
-            return None
-            
+    def _immediate_dom_capture(self, url, title, capture_type, x, y, button):
+        """Immediately capture a DOM snapshot, bypassing cooldown checks"""
         try:
-            # Capture the DOM snapshot
-            snapshot_data = capture_chromium_dom_snapshot(port)
-            
-            if not snapshot_data or snapshot_data == "{}":
-                logging.warning("Empty DOM snapshot returned in immediate capture")
+            # Check if we're paused or if the recording has stopped
+            if not self._is_recording or self._is_paused:
+                logging.info("Immediate DOM capture skipped - recording is paused or stopped")
                 return None
                 
-            # Generate a URL hash for the filename
-            current_time = time.perf_counter()
-            url_hash = hashlib.md5(url.encode()).hexdigest()[:8] if url else None
+            # Make sure we have a valid URL
+            if not url or url == "about:blank":
+                logging.info("Immediate DOM capture skipped - no valid URL")
+                return None
+
+            # Check if Chrome debugger is available
+            if not self.is_chromium_focused:
+                logging.info("Immediate DOM capture skipped - browser not focused")
+                return None
+
+            # Attempt to find Chrome debugging port
+            port = self._find_chrome_debugging_port()
+            if not port:
+                logging.warning("No Chrome debugging port found for DOM capture")
+                return None
                 
-            # Create the folder for DOM snapshots if it doesn't exist
-            os.makedirs(self.capture_data_path, exist_ok=True)
+            # Capture the DOM snapshot
+            snapshot_mhtml = capture_chromium_dom_snapshot(port)
+                
+            # Make sure we have a valid snapshot
+            if not snapshot_mhtml or len(snapshot_mhtml) <= 5000:
+                logging.warning("Immediate DOM capture failed - snapshot too small or empty")
+                return None
+                
+            # Generate a short hash of the content for filename and deduplication
+            content_hash = hashlib.md5(snapshot_mhtml.encode()[:50000]).hexdigest()[:8]
             
-            # Create a unique filename
-            dom_file = f"dom_{capture_type}_{url_hash}_{current_time:.6f}.mhtml"
-            dom_file_path = os.path.join(self.capture_data_path, dom_file)
+            # Check if we recently captured this same content
+            if content_hash in self.recent_dom_hashes:
+                logging.info(f"Skipping duplicate DOM snapshot (hash: {content_hash})")
+                return None
+                
+            # Add to recent hashes
+            self.recent_dom_hashes.append(content_hash)
+            # Maintain limited size
+            if len(self.recent_dom_hashes) > RECENT_DOM_HASH_CAPACITY:
+                self.recent_dom_hashes.pop(0)
+                
+            # Create the filename with the hash included for easier tracking
+            timestamp = time.perf_counter()
+            self.last_dom_capture_time = timestamp 
+            filename = f"dom_{capture_type}_{content_hash}_{timestamp:.6f}.mhtml"
+            filepath = os.path.join(self.capture_data_path, filename)
             
             # Save the DOM snapshot
-            with open(dom_file_path, 'w', encoding='utf-8') as f:
-                f.write(snapshot_data)
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(snapshot_mhtml)
                 
-            # Log the capture
-            logging.info(f"Immediate DOM snapshot captured: {dom_file_path}")
+            logging.info(f"Immediate DOM capture saved: {os.path.basename(filepath)}")
             
-            # Update the event with the DOM snapshot info
-            self._add_dom_event(dom_file_path, url, title, True, capture_type, x, y, button)
+            # Record this DOM capture event
+            dom_event = {
+                "time_stamp": timestamp,
+                "action": "dom_capture",
+                "dom_snapshot": filepath,
+                "is_mhtml": True,
+                "x": x,
+                "y": y,
+                "button": button,
+                "capture_type": capture_type
+            }
+            self.event_queue.put(dom_event, block=False)
             
-            return dom_file_path
+            # Return the filepath so it can be referenced elsewhere
+            return filepath
             
         except Exception as e:
-            logging.error(f"Error capturing immediate DOM snapshot: {e}")
+            logging.error(f"Error in immediate DOM capture: {e}")
             return None
 
     def _schedule_bookmark_capture(self, x, y, button_name):

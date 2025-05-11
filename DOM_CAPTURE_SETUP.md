@@ -80,6 +80,32 @@ DuckTrack will automatically try to find a suitable browser for DOM captures:
 
 This means you don't need to configure anything - as long as at least one browser is running with debugging enabled, DuckTrack should be able to capture DOM snapshots.
 
+## When DOM & Accessibility Captures Occur
+
+DuckTrack intelligently captures DOM snapshots and accessibility trees at key moments:
+
+### DOM Snapshot Triggers
+
+- **Mouse Clicks:** Immediate capture when clicking in a browser window
+- **Delayed Capture:** 3-second delayed capture after clicks to catch page transitions
+- **Key Presses:** When pressing navigation keys (Enter, Tab, arrows, etc.)
+- **Page Changes:** When navigating to a new URL or site
+- **Periodic Capture:** Automatic capture every 30 seconds
+
+### Accessibility Tree Triggers (macOS)
+
+- **Mouse Clicks:** When clicking in native applications
+- **Key Presses:** When pressing navigation or modifier keys
+- **Delayed Key Capture:** After key release to capture resulting UI changes
+
+### Smart Deduplication
+
+To prevent excessive storage use, DuckTrack implements smart deduplication:
+- Content-based hashing to avoid saving identical snapshots
+- Cooldown periods between captures (2-5 seconds)
+- Detection of similar URLs to prevent near-duplicate captures
+- Levenshtein distance comparison for URLs to identify similar pages
+
 ## Granting Accessibility Permissions (macOS)
 
 For DuckTrack to capture accessibility trees from native apps on macOS:
