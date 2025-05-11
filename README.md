@@ -69,6 +69,23 @@ You will interact with the app through an app tray icon (menu bar on macOS, syst
 
 From the app tray or GUI, you can start and stop a recording as well as pause and resume a recording. Pausing and resuming is important for when you want to hide sensitive information like credit card or login credentials. You can optionally name your recording and give it a description upon stopping a recording. You can also view your recordings by pressing the "Show Recordings" option.
 
+### Browser Launcher
+
+The app includes a browser launcher feature designed to capture DOM snapshots while recording. When you click "Launch Browser for DOM Capture" from the main interface or tray menu, you can:
+
+1. Select from any installed Chromium-based browser (Chrome, Edge, Brave, etc.)
+2. Automatically configure the browser with debugging enabled
+3. Start using the browser normally - no technical setup required!
+
+When you record while using a launched browser, DuckTrack will capture DOM snapshots in the `dom_snaps` folder of your recording whenever you:
+- Click on an element
+- Press navigation keys (enter, tab, arrow keys, etc.)
+- Press modifier keys (shift, ctrl, alt, command, etc.)
+
+These DOM snapshots provide valuable context about the browser's structure during your interactions, which is useful for training and evaluating computer-use models.
+
+> **Note:** DOM snapshots are only captured from browsers launched through DuckTrack's Browser Launcher, not from browsers started normally.
+
 ### Playback
 
 You can playback a recording, i.e. simulate the series of events from the recording, by pressing "Play Latest Recording", which plays the latest created recording, or by pressing "Play Custom Recording", which lets you choose a recording to play. You can easily replay the most recently played recording by pressing "Replay Recording".
@@ -107,6 +124,53 @@ Here is a [sample recording](example) for further reference.
 - After doing lots of playbacks on macOS, a segfault will occur.
 - Mouse movement is not captured when the current application is using raw input, i.e. video games.
 - OBS may not open in the background properly on some Linux machines.
+
+## DOM and Accessibility Tree Captures
+
+DuckTrack automatically captures DOM snapshots from browsers and accessibility trees from native applications during recording to provide contextual data about what you're interacting with.
+
+### DOM Capture Triggers
+
+DOM snapshots are captured when the following events occur:
+
+1. **Mouse Clicks**: A DOM snapshot is taken immediately when you click (left or right) within a Chromium-based browser
+2. **Delayed Captures**: An additional capture happens 3 seconds after clicks to catch page transitions
+3. **Key Presses**: When you press important keys like Enter, Tab, arrow keys, Escape, etc.
+4. **Page Changes**: When you navigate to a new page or URL
+5. **Periodic Captures**: Every 30 seconds to ensure continuous coverage
+
+### Accessibility Tree Capture Triggers (macOS only)
+
+Accessibility trees are captured when:
+
+1. **Mouse Clicks**: When clicking within native applications
+2. **Key Presses**: When pressing navigation keys (Enter, Tab, arrows) or modifier keys (Shift, Ctrl, Alt/Option, Command)
+
+### Deduplication Logic
+
+To prevent redundant captures and save disk space:
+
+1. Snapshots are compared using content hashing - identical content is not duplicated
+2. A cooldown period (2-5 seconds) prevents too many captures of the same content
+3. Similar URLs are detected to avoid duplicate captures of pages with minor URL differences
+
+For more details on setting up and troubleshooting these features, see [DOM_CAPTURE_SETUP.md](DOM_CAPTURE_SETUP.md).
+
+### Privacy Considerations and Limitations
+
+DuckTrack respects privacy mechanisms built into websites and applications. Be aware of these important limitations:
+
+1. **Google Docs & Office Web Apps:** These applications use advanced rendering techniques and security mechanisms that prevent DOM content extraction. When capturing Google Docs pages, the text content will typically appear blank or minimal in DOM captures for privacy/security reasons.
+
+2. **Banking & Financial Sites:** Many banking websites implement content security policies and anti-scraping techniques that may limit what appears in DOM captures.
+
+3. **Browser Extensions:** Pages within extension contexts often won't capture properly.
+
+4. **Private/Incognito Mode:** Some browsers may restrict debugging connections in private/incognito windows.
+
+5. **Login Forms:** Password fields are typically masked in DOM captures as part of browser security.
+
+These limitations are by design and represent the privacy/security mechanisms of the respective applications rather than issues with DuckTrack itself.
 
 ## Things To Do
 

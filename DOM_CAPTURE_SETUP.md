@@ -5,44 +5,106 @@ DuckTrack can capture DOM snapshots from web browsers and accessibility trees fr
 ## Requirements
 
 1. **For DOM Capture:**
-   - A Chromium-based browser (Chrome, Edge, Brave)
+   - A Chromium-based browser (Chrome, Edge, Brave, Opera, Vivaldi, etc.)
    - The browser must be started with remote debugging enabled
    
 2. **For Accessibility Tree Capture:**
    - macOS only
    - Accessibility permissions must be granted to DuckTrack
 
-## Setting Up Chrome for DOM Capture
+## Setting Up Browsers for DOM Capture
 
-For DuckTrack to capture DOM snapshots from Chrome (or other Chromium browsers), you must start the browser with remote debugging enabled:
+For DuckTrack to capture DOM snapshots from Chromium-based browsers, at least one browser must be running with remote debugging enabled:
 
-### Option 1: Use our helper script
+### Option 1: Use our helper script (Recommended)
 
-We've included a helper script to launch Chrome with the correct settings:
+We've included a helper script that can launch any supported browser with debugging enabled:
 
 ```bash
 # From the DuckTrack directory:
 python3 launch_chrome_debug.py
 ```
 
-This will automatically find and launch Chrome with debugging enabled.
+**Advanced usage:**
+```bash
+# List available browsers
+python3 launch_chrome_debug.py --list
+
+# Launch specific browser
+python3 launch_chrome_debug.py --browser edge
+
+# Use different port (if 9222 is already in use)
+python3 launch_chrome_debug.py --port 9223
+
+# Launch browser with specific URL
+python3 launch_chrome_debug.py --url https://github.com
+```
 
 ### Option 2: Manual launch
 
+If you prefer to launch browsers manually, here are the commands for different platforms:
+
 #### macOS:
 ```bash
+# Chrome
 open -a "Google Chrome" --args --remote-debugging-port=9222
+
+# Microsoft Edge
+open -a "Microsoft Edge" --args --remote-debugging-port=9222
+
+# Brave Browser
+open -a "Brave Browser" --args --remote-debugging-port=9222
 ```
 
 #### Windows:
 ```
 "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
+"C:\Program Files\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9222
+"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe" --remote-debugging-port=9222
 ```
 
 #### Linux:
 ```bash
 google-chrome --remote-debugging-port=9222
+microsoft-edge --remote-debugging-port=9222
+brave-browser --remote-debugging-port=9222
 ```
+
+## How DuckTrack Detects Browsers
+
+DuckTrack will automatically try to find a suitable browser for DOM captures:
+
+1. It first tries the default port (9222)
+2. If that fails, it checks other common debugging ports (9223, 9224, 9333, 8080)
+3. It will use the first available browser it finds
+
+This means you don't need to configure anything - as long as at least one browser is running with debugging enabled, DuckTrack should be able to capture DOM snapshots.
+
+## When DOM & Accessibility Captures Occur
+
+DuckTrack intelligently captures DOM snapshots and accessibility trees at key moments:
+
+### DOM Snapshot Triggers
+
+- **Mouse Clicks:** Immediate capture when clicking in a browser window
+- **Delayed Capture:** 3-second delayed capture after clicks to catch page transitions
+- **Key Presses:** When pressing navigation keys (Enter, Tab, arrows, etc.)
+- **Page Changes:** When navigating to a new URL or site
+- **Periodic Capture:** Automatic capture every 30 seconds
+
+### Accessibility Tree Triggers (macOS)
+
+- **Mouse Clicks:** When clicking in native applications
+- **Key Presses:** When pressing navigation or modifier keys
+- **Delayed Key Capture:** After key release to capture resulting UI changes
+
+### Smart Deduplication
+
+To prevent excessive storage use, DuckTrack implements smart deduplication:
+- Content-based hashing to avoid saving identical snapshots
+- Cooldown periods between captures (2-5 seconds)
+- Detection of similar URLs to prevent near-duplicate captures
+- Levenshtein distance comparison for URLs to identify similar pages
 
 ## Granting Accessibility Permissions (macOS)
 
@@ -58,20 +120,22 @@ For DuckTrack to capture accessibility trees from native apps on macOS:
 
 ### DOM Snapshots Not Being Captured
 
-1. **Check if Chrome is running with debugging enabled:**
+1. **Check if any browser has debugging enabled:**
    ```bash
    python3 debug_chrome_cdp.py
    ```
-   This will tell you if Chrome is properly configured.
+   This will attempt to connect to any available browser.
 
 2. **Common issues:**
-   - Chrome not started with `--remote-debugging-port=9222`
-   - Another application is using port 9222
-   - DuckTrack doesn't have network access to connect to Chrome
+   - No browsers started with the `--remote-debugging-port` flag
+   - Firewalls blocking access to the debugging ports
+   - Antivirus software preventing the connections
+   - Custom browser configurations that disable remote debugging
 
 3. **Check the logs:**
-   - Look for error messages mentioning "CDP connection failed"
-   - Verify that Chrome was detected as the focused application
+   - Look for messages indicating connection attempts to different ports
+   - Check for "CDP connection failed" or similar error messages
+   - Verify that the browser is detected as the focused application
 
 ### Accessibility Trees Not Being Captured
 
@@ -88,7 +152,7 @@ For DuckTrack to capture accessibility trees from native apps on macOS:
 
 3. **Check the logs:**
    - Look for warnings about "Accessibility permissions"
-   - Check for specific errors related to "AXUIElement" or "kAXValueCGPointType"
+   - Check for specific errors related to "AXUIElement" or accessibility API functions
 
 ## Storage Location
 
@@ -110,10 +174,43 @@ If DuckTrack cannot create this directory, it will fallback to `~/DuckTrack_dom_
 
 We've included several debugging tools to help troubleshoot capture issues:
 
-- `debug_chrome_cdp.py` - Tests Chrome DevTools Protocol connectivity
+- `debug_chrome_cdp.py` - Tests Chrome DevTools Protocol connectivity with any available browser
 - `debug_accessibility.py` - Tests macOS Accessibility API functionality
-- `launch_chrome_debug.py` - Launches Chrome with debugging enabled
+- `launch_chrome_debug.py` - Launches any Chromium-based browser with debugging enabled
+- `check_recording.py` - Examines recordings to check if DOM and accessibility captures are working
 
 ## Need More Help?
 
 If you're still having issues with DOM or accessibility tree capture, please check the application logs or submit an issue on our GitHub repository with the specific error messages you're seeing. 
+
+## Known Privacy Limitations
+
+Some websites and applications employ security mechanisms that intentionally limit what can be captured via the Chrome DevTools Protocol (CDP):
+
+### Google Docs & Similar Web Apps
+
+Google Docs and similar web-based document editors use:
+- Canvas-based rendering instead of standard DOM text elements
+- Content Security Policies (CSP) that restrict access to the actual document content
+- Custom rendering engines that don't expose content in the standard DOM
+
+When capturing these sites, you'll typically see the UI framework but minimal or no actual document content. This is expected behavior and is part of these applications' security design.
+
+### Banking & Financial Services
+
+Financial websites often implement:
+- Anti-scraping technologies
+- Dynamic content obfuscation
+- Strict Content Security Policies
+- Input field masking
+
+### Technical Reasons for Limitations
+
+From a technical perspective, these limitations exist because:
+1. **Canvas Rendering:** Content rendered to HTML5 canvas elements isn't accessible via the DOM tree
+2. **Shadow DOM Isolation:** Components using Shadow DOM may not expose their internal structure
+3. **iframes with Different Origins:** Content in cross-origin iframes is protected due to same-origin policy
+4. **JavaScript Obfuscation:** Some sites dynamically generate and transform content via obfuscated JavaScript
+5. **Browser Security Features:** Browsers intentionally limit what information is exposed via debugging interfaces
+
+These limitations are privacy and security features, not bugs in DuckTrack's capture mechanism. 

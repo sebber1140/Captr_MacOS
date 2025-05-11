@@ -24,6 +24,7 @@ from .obs_client import close_obs, is_obs_running, open_obs
 from .playback import Player, get_latest_recording
 from .recorder import Recorder
 from .util import get_recordings_dir, open_file
+from .browser_dialog import BrowserLauncherDialog
 
 
 class TitleDescriptionDialog(QDialog):
@@ -86,6 +87,11 @@ class MainInterface(QWidget):
         self.toggle_pause_button.setEnabled(False)
         layout.addWidget(self.toggle_pause_button)
         
+        # Add Launch Browser button
+        self.launch_browser_button = QPushButton("Launch Browser for DOM Capture", self)
+        self.launch_browser_button.clicked.connect(self.show_browser_launcher)
+        layout.addWidget(self.launch_browser_button)
+        
         self.show_recordings_button = QPushButton("Show Recordings", self)
         self.show_recordings_button.clicked.connect(lambda: open_file(get_recordings_dir()))
         layout.addWidget(self.show_recordings_button)
@@ -127,6 +133,11 @@ class MainInterface(QWidget):
         self.toggle_pause_action.setVisible(False)
         self.menu.addAction(self.toggle_pause_action)
         
+        # Add Launch Browser menu action
+        self.launch_browser_action = QAction("Launch Browser for DOM Capture")
+        self.launch_browser_action.triggered.connect(self.show_browser_launcher)
+        self.menu.addAction(self.launch_browser_action)
+        
         self.show_recordings_action = QAction("Show Recordings")
         self.show_recordings_action.triggered.connect(lambda: open_file(get_recordings_dir()))
         self.menu.addAction(self.show_recordings_action)
@@ -154,6 +165,39 @@ class MainInterface(QWidget):
         self.natural_scrolling_option.triggered.connect(self.toggle_natural_scrolling)
         self.menu.addAction(self.natural_scrolling_option)
         
+    @pyqtSlot()
+    def show_browser_launcher(self):
+        """Show the browser launcher dialog"""
+        dialog = BrowserLauncherDialog(self, self)  # Pass self as both parent and app reference
+        dialog.browser_launched.connect(self.on_browser_launched)
+        dialog.exec()
+    
+    @pyqtSlot(str, int, bool)
+    def on_browser_launched(self, browser_key, port, success):
+        """Handle browser launch event"""
+        if success:
+            browser_name = {
+                'chrome': 'Google Chrome',
+                'edge': 'Microsoft Edge',
+                'brave': 'Brave Browser',
+                'chromium': 'Chromium'
+            }.get(browser_key, browser_key.capitalize())
+            
+            QMessageBox.information(
+                self,
+                "Browser Connection Successful",
+                f"{browser_name} is now connected with debugging enabled on port {port}.\n\n"
+                f"When you start recording and interact with {browser_name}:\n"
+                f"• DOM snapshots will be captured when you click or press key combinations\n"
+                f"• These snapshots will be saved in the recording's 'dom_snaps' folder\n"
+                f"• You can use any website during recording - all interactions will be captured\n\n"
+                f"Ready to start recording with DOM capture!"
+            )
+            
+            # Highlight the record button to suggest next step
+            self.toggle_record_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; }")
+        # No need to handle failure, the dialog already shows an error message
+
     @pyqtSlot()
     def replay_recording(self):
         player = Player()
@@ -323,6 +367,14 @@ class MainInterface(QWidget):
             return
         except Exception as e:
             pass # Silently ignore other polling errors for now
+
+    def connect_to_chrome_debugging(self, port):
+        """Connect to Chrome with debugging enabled on the specified port
+        Returns True if successful, False otherwise"""
+        from .browser_launcher import connect_to_running_browser
+        
+        success, error = connect_to_running_browser(port)
+        return success
 
 def resource_path(relative_path: str) -> str:
     if hasattr(sys, '_MEIPASS'):
