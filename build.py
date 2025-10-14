@@ -9,10 +9,10 @@ import os # Import os for path operations
 project_dir = Path(".")
 assets_dir = project_dir / "assets"
 main_py = project_dir / "main.py"
-spec_file = project_dir / "DuckTrack.spec"
+spec_file = project_dir / "Captr.spec"
 # Use .png for icon, PyInstaller handles conversion if needed for Windows
-icon_file = assets_dir / "duck.png"
-app_name = "DuckTrack"
+icon_file = assets_dir / "captr.png"
+app_name = "Captr"
 # Virtual environment path
 venv_path = project_dir / "venv"
 venv_bin = venv_path / "bin"

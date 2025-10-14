@@ -4,7 +4,7 @@ import traceback
 
 from PyQt6.QtWidgets import QApplication
 
-from ducktrack import MainInterface
+from captr import MainInterface
 
 
 def main():

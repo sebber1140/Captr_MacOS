@@ -1,5 +1,5 @@
 """
-Browser launcher dialog for DuckTrack
+Browser launcher dialog for Captr
 
 This module provides a dialog for launching browsers with debugging enabled.
 """
@@ -357,7 +357,7 @@ class BrowserLauncherDialog(QDialog):
         if self.debug_check.isChecked():
             self.debug_text.setText(
                 f"Found {len(installed_browsers)} browsers.\n\n"
-                "Launching a browser with debugging enabled allows DuckTrack to capture DOM snapshots.\n"
+                "Launching a browser with debugging enabled allows Captr to capture DOM snapshots.\n"
                 "This creates a clean browser profile - your existing browser settings won't be affected."
             )
     

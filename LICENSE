@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2023 DuckAI
+Copyright (c) 2025 Anais Howland
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,3 +19,24 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+## Attribution
+
+Captr is derived from DuckTrack, originally created by DuckAI.
+
+Original DuckTrack Repository: https://github.com/TheDuckAI/DuckTrack
+Original License: MIT License, Copyright (c) 2023 DuckAI
+
+Captr includes significant modifications and enhancements including:
+- macOS compatibility improvements
+- DOM snapshot capture from Chromium-based browsers
+- Accessibility tree capture for native applications
+- Enhanced metadata recording
+- Browser launcher with debugging support
+- Application logging and debugging tools
+- Various bug fixes and performance improvements
+
+We are grateful to the DuckAI team for creating the original DuckTrack project
+and releasing it under the MIT License, which enabled this work.

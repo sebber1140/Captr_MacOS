@@ -1,6 +1,6 @@
 # DOM and Accessibility Tree Capture Setup Guide
 
-DuckTrack can capture DOM snapshots from web browsers and accessibility trees from native applications. These captures provide valuable context for your screen recordings. This guide will help you set up and troubleshoot these features.
+Captr can capture DOM snapshots from web browsers and accessibility trees from native applications. These captures provide valuable context for your screen recordings. This guide will help you set up and troubleshoot these features.
 
 ## Requirements
 
@@ -10,18 +10,18 @@ DuckTrack can capture DOM snapshots from web browsers and accessibility trees fr
    
 2. **For Accessibility Tree Capture:**
    - macOS only
-   - Accessibility permissions must be granted to DuckTrack
+   - Accessibility permissions must be granted to Captr
 
 ## Setting Up Browsers for DOM Capture
 
-For DuckTrack to capture DOM snapshots from Chromium-based browsers, at least one browser must be running with remote debugging enabled:
+For Captr to capture DOM snapshots from Chromium-based browsers, at least one browser must be running with remote debugging enabled:
 
 ### Option 1: Use our helper script (Recommended)
 
 We've included a helper script that can launch any supported browser with debugging enabled:
 
 ```bash
-# From the DuckTrack directory:
+# From the Captr directory:
 python3 launch_chrome_debug.py
 ```
 
@@ -70,19 +70,19 @@ microsoft-edge --remote-debugging-port=9222
 brave-browser --remote-debugging-port=9222
 ```
 
-## How DuckTrack Detects Browsers
+## How Captr Detects Browsers
 
-DuckTrack will automatically try to find a suitable browser for DOM captures:
+Captr will automatically try to find a suitable browser for DOM captures:
 
 1. It first tries the default port (9222)
 2. If that fails, it checks other common debugging ports (9223, 9224, 9333, 8080)
 3. It will use the first available browser it finds
 
-This means you don't need to configure anything - as long as at least one browser is running with debugging enabled, DuckTrack should be able to capture DOM snapshots.
+This means you don't need to configure anything - as long as at least one browser is running with debugging enabled, Captr should be able to capture DOM snapshots.
 
 ## When DOM & Accessibility Captures Occur
 
-DuckTrack intelligently captures DOM snapshots and accessibility trees at key moments:
+Captr intelligently captures DOM snapshots and accessibility trees at key moments:
 
 ### DOM Snapshot Triggers
 
@@ -100,7 +100,7 @@ DuckTrack intelligently captures DOM snapshots and accessibility trees at key mo
 
 ### Smart Deduplication
 
-To prevent excessive storage use, DuckTrack implements smart deduplication:
+To prevent excessive storage use, Captr implements smart deduplication:
 - Content-based hashing to avoid saving identical snapshots
 - Cooldown periods between captures (2-5 seconds)
 - Detection of similar URLs to prevent near-duplicate captures
@@ -108,13 +108,13 @@ To prevent excessive storage use, DuckTrack implements smart deduplication:
 
 ## Granting Accessibility Permissions (macOS)
 
-For DuckTrack to capture accessibility trees from native apps on macOS:
+For Captr to capture accessibility trees from native apps on macOS:
 
-1. Go to System Preferences > Security & Privacy > Privacy
+1. Go to System Settings > Privacy & Security > Privacy
 2. Select "Accessibility" from the left panel
 3. Click the lock to make changes (requires admin password)
-4. Check the box next to DuckTrack.app
-5. Restart DuckTrack if it's already running
+4. Check the box next to Captr.app
+5. Restart Captr if it's already running
 
 ## Troubleshooting
 
@@ -143,10 +143,10 @@ For DuckTrack to capture accessibility trees from native apps on macOS:
    ```bash
    python3 debug_accessibility.py
    ```
-   This will test if DuckTrack can access the accessibility API.
+   This will test if Captr can access the accessibility API.
 
 2. **Common issues:**
-   - Accessibility permissions not granted to DuckTrack
+   - Accessibility permissions not granted to Captr
    - The application you're trying to capture doesn't properly support accessibility
    - The PyObjC library is not properly installed or working
 
@@ -168,7 +168,7 @@ By default, the captures are stored in a `dom_snaps` directory within each recor
 └── ...
 ```
 
-If DuckTrack cannot create this directory, it will fallback to `~/DuckTrack_dom_snaps/`.
+If Captr cannot create this directory, it will fallback to `~/Captr_dom_snaps/`.
 
 ## Additional Tools
 
@@ -213,4 +213,4 @@ From a technical perspective, these limitations exist because:
 4. **JavaScript Obfuscation:** Some sites dynamically generate and transform content via obfuscated JavaScript
 5. **Browser Security Features:** Browsers intentionally limit what information is exposed via debugging interfaces
 
-These limitations are privacy and security features, not bugs in DuckTrack's capture mechanism. 
+These limitations are privacy and security features, not bugs in Captr's capture mechanism. 

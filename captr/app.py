@@ -75,7 +75,7 @@ class MainInterface(QWidget):
             self.obs_process = open_obs()
 
     def init_window(self):
-        self.setWindowTitle("DuckTrack")
+        self.setWindowTitle("Captr")
         layout = QVBoxLayout(self)
         
         self.toggle_record_button = QPushButton("Start Recording", self)

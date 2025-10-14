@@ -1,5 +1,5 @@
 """
-Browser launcher for DuckTrack
+Browser launcher for Captr
 
 This module handles detection and launching of Chromium-based browsers with debugging enabled.
 """
@@ -382,7 +382,7 @@ def launch_browser(browser_key: str, port: Optional[int] = None, url: Optional[s
             
             # Create a unique timestamped user data directory for isolation
             timestamp = int(time.time())
-            user_data_dir = os.path.expanduser(f"~/Library/Application Support/DuckTrack/Browser_Debug_{port}_{timestamp}")
+            user_data_dir = os.path.expanduser(f"~/Library/Application Support/Captr/Browser_Debug_{port}_{timestamp}")
             os.makedirs(user_data_dir, exist_ok=True)
             logging.info(f"Created user data directory: {user_data_dir}")
             
@@ -451,7 +451,7 @@ def launch_browser(browser_key: str, port: Optional[int] = None, url: Optional[s
                 return False, 0, f"Could not find executable for {browser_key} on Windows"
             
             # Create a user data directory
-            user_data_dir = os.path.join(os.path.expanduser("~"), f"DuckTrack_Browser_Debug_{port}_{int(time.time())}")
+            user_data_dir = os.path.join(os.path.expanduser("~"), f"Captr_Browser_Debug_{port}_{int(time.time())}")
             os.makedirs(user_data_dir, exist_ok=True)
             
             # Launch browser

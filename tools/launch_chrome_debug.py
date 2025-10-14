@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Utility script to launch Chromium-based browsers with remote debugging enabled.
-This is necessary for the DOM snapshot feature in DuckTrack to work.
+This is necessary for the DOM snapshot feature in Captr to work.
 """
 
 import os
@@ -198,7 +198,7 @@ def launch_chrome_with_debugging():
             pass
         
         # Create a user data directory
-        user_data_dir = os.path.expanduser(f"~/Library/Application Support/DuckTrack/Browser_Debug_{port}")
+        user_data_dir = os.path.expanduser(f"~/Library/Application Support/Captr/Browser_Debug_{port}")
         os.makedirs(user_data_dir, exist_ok=True)
         print(f"Using browser profile: {user_data_dir}")
         
@@ -234,7 +234,7 @@ def launch_chrome_with_debugging():
             return
         
         # Create a user data directory
-        user_data_dir = os.path.join(os.path.expanduser("~"), f"DuckTrack_Browser_Debug_{port}")
+        user_data_dir = os.path.join(os.path.expanduser("~"), f"Captr_Browser_Debug_{port}")
         os.makedirs(user_data_dir, exist_ok=True)
         print(f"Using browser profile: {user_data_dir}")
         
@@ -300,7 +300,7 @@ def launch_chrome_with_debugging():
             print("Waiting for Chrome to initialize (5 seconds)...")
             time.sleep(5)
             
-            print(f"\nNow you can open DuckTrack and use 'Connect to browser' option to connect to Chrome on port {port}.")
+            print(f"\nNow you can open Captr and use 'Connect to browser' option to connect to Chrome on port {port}.")
             print("Or launch it directly with: python main.py")
             
             # Optionally, check if the port is open
@@ -364,12 +364,12 @@ def main():
     
     if launch_browser_with_debugging(browser_to_use, args.port, url):
         logging.info(f"Success! {browser_to_use.capitalize()} is now running with debugging enabled on port {args.port}.")
-        logging.info("DuckTrack can now capture DOM snapshots when this browser is in focus.")
+        logging.info("Captr can now capture DOM snapshots when this browser is in focus.")
     else:
         logging.error(f"Failed to launch {browser_to_use} with debugging enabled.")
         
 if __name__ == "__main__":
     print("=== Chrome Debugger Launcher ===")
-    print("This tool will launch Chrome with debugging enabled for DuckTrack")
+    print("This tool will launch Chrome with debugging enabled for Captr")
     print("=" * 35)
     launch_chrome_with_debugging() 

@@ -954,7 +954,7 @@ class Recorder(QThread):
             except Exception as e:
                 logging.error(f"Error creating or writing to dom_snaps directory: {e}")
                 # Fallback to a different location
-                alt_path = os.path.join(os.path.expanduser('~'), 'DuckTrack_dom_snaps')
+                alt_path = os.path.join(os.path.expanduser('~'), 'Captr_dom_snaps')
                 logging.info(f"Trying alternate dom_snaps path: {alt_path}")
                 try:
                     os.makedirs(alt_path, exist_ok=True)
@@ -2753,7 +2753,7 @@ def _create_minimal_placeholder(reason, url):
     return f"""<!DOCTYPE html>
 <html>
 <head>
-    <title>DuckTrack DOM Capture Placeholder</title>
+    <title>Captr DOM Capture Placeholder</title>
     <meta charset="utf-8">
     <meta name="url" content="{url}">
     <meta name="capture-error" content="{reason}">

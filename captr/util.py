@@ -17,7 +17,7 @@ def name_to_button(name: str) -> Button:
     return getattr(Button, name)
 
 def get_recordings_dir() -> str:
-    documents_folder = Path.home() / 'Documents' / 'DuckTrack_Recordings'
+    documents_folder = Path.home() / 'Documents' / 'Captr_Recordings'
     return str(documents_folder)
 
 def fix_windows_dpi_scaling():

@@ -1,181 +1,182 @@
-# DuckTrack
+# Captr for macOS
 
-This is the repository for the DuckAI DuckTrack app which records all keyboard and mouse input as well as the screen for use in a multimodal computer interaction dataset.
+**Captr** is a screen recording and computer interaction capture tool that records keyboard/mouse input, screen video, DOM snapshots, and accessibility trees. Perfect for creating datasets to train and evaluate computer-use AI models.
 
-This version includes patches to ensure proper functionality on macOS.
+![Captr Logo](assets/captr.png)
 
-## Installation & Setup
+## Features
 
-### macOS Users (Recommended)
+- **Screen & Input Recording:** Captures all mouse movements, clicks, scrolls, and keyboard inputs with precise timestamps
+- **OBS Integration:** Automatic screen recording via OBS Studio
+- **DOM Capture:** Automatically captures webpage structure from Chromium browsers (Chrome, Edge, Brave, etc.)
+- **Accessibility Trees:** Records macOS accessibility information from native applications
+- **System Metadata:** Captures detailed system information (OS, screen resolution, installed apps, etc.)
+- **Privacy Controls:** Pause/resume recording to hide sensitive information
+- **Playback:** Replay recorded sessions to verify captures
 
-1.  **Download the App:** Go to the [**Releases**](https://github.com/anaishowland/DuckTrack-0.1.0-beta/releases) section of this GitHub repository.
-    *   Find the latest release (e.g., v0.1.0-beta).
-    *   Download the `DuckTrack.dmg` file from the assets.
-2.  **Install:**
-    *   Double-click the downloaded `DuckTrack.dmg` file to open it.
-    *   Drag the `DuckTrack.app` icon into the `Applications` folder shortcut within the disk image window.
-    *   You can now eject the "DuckTrack" disk image from your Finder sidebar.
-3.  **OBS Setup:** Ensure you have OBS Studio installed and configured correctly:
-    *   Have a screen capture source recording your *entire main screen*.
-    *   Enable desktop audio and mute microphone audio sources in OBS's audio mixer.
-    *   Make sure the OBS WebSocket server is enabled (usually under `Tools -> WebSocket Server Settings`). The default port `4455` and no password is expected.
-    *   *More detailed OBS setup instructions: [OBS_SETUP.md](OBS_SETUP.md)*
-4.  **macOS Permissions:** The first time you run DuckTrack, macOS will likely ask for permissions:
-    *   **Accessibility:** Required for playing back recorded actions. Go to `System Settings -> Privacy & Security -> Accessibility` and ensure `DuckTrack.app` is listed and enabled (you might need to add it manually using the '+' button).
-    *   **Input Monitoring:** Required for recording keyboard inputs. Go to `System Settings -> Privacy & Security -> Input Monitoring` and ensure `DuckTrack.app` is listed and enabled.
-    *   **Screen Recording:** Required by OBS for capturing the screen. OBS itself should prompt for this, but ensure it's enabled in `System Settings -> Privacy & Security -> Screen Recording`.
-    *   Accept any other security prompts that may appear.
-5.  **Run:** Launch DuckTrack from your Applications folder.
+## Installation
 
-### Build from source (Advanced)
+### Option 1: Download Pre-built App (Recommended)
 
-Have Python >=3.11 installed.
+1. Download the latest `Captr.dmg` from the [Releases](../../releases) page
+2. Open the DMG file and drag `Captr.app` to your Applications folder
+3. Install and configure OBS Studio (see [OBS Setup](#obs-setup))
+4. Grant required macOS permissions when prompted
 
-Clone this repo and `cd` into it:
+### Option 2: Build from Source
+
+Requirements: Python ≥3.11, OBS Studio
+
 ```bash
-git clone https://github.com/anaishowland/DuckTrack-0.1.0-beta
-cd DuckTrack-0.1.0-beta
-```
+# Clone the repository
+git clone https://github.com/YOUR_USERNAME/Captr_MacOS.git
+cd Captr_MacOS
 
-Create and activate a virtual environment (recommended):
-```bash
+# Create virtual environment
 python3 -m venv venv
 source venv/bin/activate
-```
 
-Install the dependencies:
-```bash
+# Install dependencies
 pip install -r requirements.txt
-# On macOS, also install PyObjC:
-pip install pyobjc-framework-Cocoa
-```
 
-Build the application:
-```bash
+# Build the app
 python build.py
 ```
 
-The built application (`.app` on macOS, `.exe` on Windows) will be in the `dist` directory. Follow the relevant OBS setup and permissions steps from the section above before running.
+The built app will be in the `dist` folder as `Captr.dmg`.
 
-## Running the App
+## OBS Setup
 
-If you installed via the `.dmg` (macOS) or ran the builder, launch the application normally.
+Captr requires OBS Studio for screen recording:
 
-If running directly from source: `python main.py`
+1. Download and install [OBS Studio](https://obsproject.com/)
+2. Open OBS and go to **Tools → WebSocket Server Settings**
+3. Enable **WebSocket server** and disable **Authentication**
+4. Add a **macOS Screen Capture** source in OBS
+5. Close OBS (Captr will control it automatically)
 
-You will interact with the app through an app tray icon (menu bar on macOS, system tray on Windows/Linux) or a small window.
+For detailed instructions, see [OBS_SETUP.md](OBS_SETUP.md).
+
+## macOS Permissions
+
+Captr needs these permissions to function:
+
+1. **Accessibility:** `System Settings → Privacy & Security → Accessibility`
+   - Required for recording keyboard inputs and playing back actions
+2. **Input Monitoring:** `System Settings → Privacy & Security → Input Monitoring`
+   - Required for keyboard capture
+3. **Screen Recording:** `System Settings → Privacy & Security → Screen Recording`
+   - Required by OBS for screen capture
+
+macOS will prompt for these permissions on first run.
+
+## Usage
 
 ### Recording
 
-From the app tray or GUI, you can start and stop a recording as well as pause and resume a recording. Pausing and resuming is important for when you want to hide sensitive information like credit card or login credentials. You can optionally name your recording and give it a description upon stopping a recording. You can also view your recordings by pressing the "Show Recordings" option.
+1. Launch Captr from Applications
+2. Click **Start Recording**
+3. Perform your computer tasks
+4. Use **Pause/Resume** to hide sensitive information (passwords, credit cards, etc.)
+5. Click **Stop Recording**
+6. Optionally name and describe your recording
 
-### Browser Launcher
+Recordings are saved to `~/Documents/Captr_Recordings/`.
 
-The app includes a browser launcher feature designed to capture DOM snapshots while recording. When you click "Launch Browser for DOM Capture" from the main interface or tray menu, you can:
+### DOM Capture (Optional)
 
-1. Select from any installed Chromium-based browser (Chrome, Edge, Brave, etc.)
-2. Automatically configure the browser with debugging enabled
-3. Start using the browser normally - no technical setup required!
+To capture webpage DOM snapshots:
 
-When you record while using a launched browser, DuckTrack will capture DOM snapshots in the `dom_snaps` folder of your recording whenever you:
-- Click on an element
-- Press navigation keys (enter, tab, arrow keys, etc.)
-- Press modifier keys (shift, ctrl, alt, command, etc.)
+1. Click **Launch Browser for DOM Capture** in Captr
+2. Select your preferred Chromium browser (Chrome, Edge, Brave, etc.)
+3. Click **Launch**
+4. Use the launched browser for web browsing during recording
 
-These DOM snapshots provide valuable context about the browser's structure during your interactions, which is useful for training and evaluating computer-use models.
-
-> **Note:** DOM snapshots are only captured from browsers launched through DuckTrack's Browser Launcher, not from browsers started normally.
+DOM snapshots will be automatically captured when you click or navigate. See [DOM_CAPTURE_SETUP.md](DOM_CAPTURE_SETUP.md) for details.
 
 ### Playback
 
-You can playback a recording, i.e. simulate the series of events from the recording, by pressing "Play Latest Recording", which plays the latest created recording, or by pressing "Play Custom Recording", which lets you choose a recording to play. You can easily replay the most recently played recording by pressing "Replay Recording".
-
-To stop the app mid-playback, just press `shift`+`esc` on your keyboard.
-
-### Misc
-
-To quit the app, you just press the "Quit" option.
+- **Play Latest Recording:** Replays the most recent recording
+- **Play Custom Recording:** Choose any recording to replay
+- Press `Shift+Esc` to stop playback
 
 ## Recording Format
 
-Recordings are stored in `Documents/DuckTrack_Recordings`. Each recording is a directory containing:
+Each recording creates a folder in `~/Documents/Captr_Recordings/` containing:
 
-1.  `events.jsonl` file - sequence of all computer actions that happened. Includes mouse moves, clicks, scrolls, key presses/releases, and application focus changes. A sample event may look like this:
-    ```json
-    {"time_stamp": 1234567.89, "action": "move", "x": 69.0, "y": 420.0}
-    ```
-    ```json
-    {"time_stamp": 1234570.12, "action": "window_focus", "app_name": "Finder", "window_title": "Finder", "x": 123.0, "y": 456.0, "button": null, "pressed": false}
-    ```
-1.  `metadata.json` - stores metadata about the computer that made the recording
-2.  `README.md` - stores the optional description for the recording
-3.  MP4 file - the screen recording from OBS of the recording.
+- `events.jsonl` - All keyboard/mouse actions with timestamps
+- `metadata.json` - System information
+- `*.mp4` - Screen recording video from OBS
+- `dom_snaps/` - DOM snapshots from web pages (if DOM capture enabled)
+- `a11y_snaps/` - Accessibility tree captures from native apps
+- `README.md` - Optional recording description
 
-Here is a [sample recording](example) for further reference.
+### Sample Event Format
 
-## Technical Overview
+```json
+{"time_stamp": 1234567.89, "action": "move", "x": 100.0, "y": 200.0}
+{"time_stamp": 1234568.01, "action": "click", "x": 100.0, "y": 200.0, "button": "left", "pressed": true}
+{"time_stamp": 1234568.15, "action": "key", "key": "a", "pressed": true}
+```
 
-<!-- maybe put a nice graphical representation of the app here -->
+## Troubleshooting
 
-*TBD*
+### DOM Captures Not Working
 
-## Known Bugs
+Run the diagnostic tool:
+```bash
+cd tools
+python3 check_recording.py
+```
 
-- After doing lots of playbacks on macOS, a segfault will occur.
-- Mouse movement is not captured when the current application is using raw input, i.e. video games.
-- OBS may not open in the background properly on some Linux machines.
+Make sure you're using a browser launched through Captr's **Launch Browser** feature.
 
-## DOM and Accessibility Tree Captures
+### App Crashes or Permissions Issues
 
-DuckTrack automatically captures DOM snapshots from browsers and accessibility trees from native applications during recording to provide contextual data about what you're interacting with.
+Check detailed logs:
+```bash
+open dist/Captr.app --stdout-path=/tmp/captr.log --stderr-path=/tmp/captr_err.log
+cat /tmp/captr.log
+```
 
-### DOM Capture Triggers
+### Other Issues
 
-DOM snapshots are captured when the following events occur:
+See [DOM_CAPTURE_SETUP.md](DOM_CAPTURE_SETUP.md) for DOM/accessibility tree troubleshooting.
 
-1. **Mouse Clicks**: A DOM snapshot is taken immediately when you click (left or right) within a Chromium-based browser
-2. **Delayed Captures**: An additional capture happens 3 seconds after clicks to catch page transitions
-3. **Key Presses**: When you press important keys like Enter, Tab, arrow keys, Escape, etc.
-4. **Page Changes**: When you navigate to a new page or URL
-5. **Periodic Captures**: Every 30 seconds to ensure continuous coverage
+## Known Limitations
 
-### Accessibility Tree Capture Triggers (macOS only)
+- After many playbacks, a segfault may occur (restart Captr)
+- Mouse input not captured in video games that use raw input
+- Google Docs and similar canvas-based web apps have limited DOM capture (by design for privacy)
+- Banking sites may limit DOM capture content due to security policies
 
-Accessibility trees are captured when:
+## Development
 
-1. **Mouse Clicks**: When clicking within native applications
-2. **Key Presses**: When pressing navigation keys (Enter, Tab, arrows) or modifier keys (Shift, Ctrl, Alt/Option, Command)
+### Running from Source
 
-### Deduplication Logic
+```bash
+source venv/bin/activate
+python main.py
+```
 
-To prevent redundant captures and save disk space:
+### Utility Scripts
 
-1. Snapshots are compared using content hashing - identical content is not duplicated
-2. A cooldown period (2-5 seconds) prevents too many captures of the same content
-3. Similar URLs are detected to avoid duplicate captures of pages with minor URL differences
+Located in `tools/`:
+- `launch_chrome_debug.py` - Launch browsers with debugging enabled
+- `check_recording.py` - Verify recordings and diagnose issues
+- `debug_accessibility.py` - Test accessibility API access
+- `debug_chrome_cdp.py` - Test Chrome DevTools Protocol connection
 
-For more details on setting up and troubleshooting these features, see [DOM_CAPTURE_SETUP.md](DOM_CAPTURE_SETUP.md).
+## Attribution
 
-### Privacy Considerations and Limitations
+Captr is derived from [DuckTrack](https://github.com/TheDuckAI/DuckTrack) by DuckAI, released under the MIT License. We've added significant enhancements including DOM capture, accessibility trees, enhanced macOS support, and improved debugging tools.
 
-DuckTrack respects privacy mechanisms built into websites and applications. Be aware of these important limitations:
+See [LICENSE](LICENSE) for full details.
 
-1. **Google Docs & Office Web Apps:** These applications use advanced rendering techniques and security mechanisms that prevent DOM content extraction. When capturing Google Docs pages, the text content will typically appear blank or minimal in DOM captures for privacy/security reasons.
+## License
 
-2. **Banking & Financial Sites:** Many banking websites implement content security policies and anti-scraping techniques that may limit what appears in DOM captures.
+MIT License - see [LICENSE](LICENSE) file for details.
 
-3. **Browser Extensions:** Pages within extension contexts often won't capture properly.
+---
 
-4. **Private/Incognito Mode:** Some browsers may restrict debugging connections in private/incognito windows.
-
-5. **Login Forms:** Password fields are typically masked in DOM captures as part of browser security.
-
-These limitations are by design and represent the privacy/security mechanisms of the respective applications rather than issues with DuckTrack itself.
-
-## Things To Do
-
-- Testing
-- CI (with builds and testing)
-- Add way to hide/show window from the app tray (and it saves that as a preference?)
-- Make saving preferences a thing generally, like with natural scrolling too
-- Add explicit logging to files.
+**Created by Anais Howland at Paradigm Shift AI** | Based on DuckTrack by DuckAI

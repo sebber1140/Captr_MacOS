@@ -19,11 +19,11 @@ def get_recordings_dir():
     if sys.platform == 'darwin':  # macOS
         home_dir = os.path.expanduser('~')
         documents_dir = os.path.join(home_dir, 'Documents')
-        recordings_dir = os.path.join(documents_dir, 'DuckTrack_Recordings')
+        recordings_dir = os.path.join(documents_dir, 'Captr_Recordings')
     else:
         # Should match what's in util.py for other platforms
         home_dir = os.path.expanduser('~')
-        recordings_dir = os.path.join(home_dir, 'DuckTrack_Recordings')
+        recordings_dir = os.path.join(home_dir, 'Captr_Recordings')
     
     if not os.path.exists(recordings_dir):
         logging.error(f"Recordings directory not found at {recordings_dir}")
@@ -55,7 +55,7 @@ def check_dom_snaps_folder(recording_path):
         
         # Check for alternative location
         home_dir = os.path.expanduser('~')
-        alt_path = os.path.join(home_dir, 'DuckTrack_dom_snaps')
+        alt_path = os.path.join(home_dir, 'Captr_dom_snaps')
         if os.path.exists(alt_path):
             logging.info(f"Found alternative dom_snaps folder at {alt_path}")
             dom_snaps_path = alt_path
@@ -167,7 +167,7 @@ def check_chrome_debug_port():
 
 def main():
     """Main function"""
-    logging.info("DuckTrack Recording Debug Tool")
+    logging.info("Captr Recording Debug Tool")
     
     # Check recordings directory
     recordings_dir = get_recordings_dir()
@@ -198,7 +198,7 @@ def main():
     check_chrome_debug_port()
     
     # Print summary
-    print("\n=== DuckTrack Debug Summary ===")
+    print("\n=== Captr Debug Summary ===")
     print(f"Latest recording: {recording_name}")
     print(f"Recording path: {latest_recording}")
     
@@ -216,11 +216,11 @@ def main():
     print("1. Run Chrome with debugging enabled (if not already):")
     print("   open -a \"Google Chrome\" --args --remote-debugging-port=9222")
     print()
-    print("2. Check app logs by running DuckTrack from terminal:")
-    print("   open dist/DuckTrack.app --stdout-path=/tmp/ducktrack.log --stderr-path=/tmp/ducktrack_err.log")
+    print("2. Check app logs by running Captr from terminal:")
+    print("   open dist/Captr.app --stdout-path=/tmp/captr.log --stderr-path=/tmp/captr_err.log")
     print("   Then check logs with: cat /tmp/ducktrack.log")
     print()
-    print("3. Make sure DuckTrack has Accessibility permissions in")
+    print("3. Make sure Captr has Accessibility permissions in")
     print("   System Preferences > Security & Privacy > Privacy > Accessibility")
     print()
     print("4. Run the debug scripts:")
