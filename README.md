@@ -173,6 +173,19 @@ Captr is derived from [DuckTrack](https://github.com/TheDuckAI/DuckTrack) by Duc
 
 See [LICENSE](LICENSE) for full details.
 
+## Citation
+
+If you use Captr in your research or project, please cite it as:
+
+```bibtex
+@software{howland2025captr,
+  author = {Howland, Anais},
+  title = {Captr: Screen Recording and Computer Interaction Capture for Computer-Use Datasets},
+  year = {2025},
+  url = {https://github.com/anaishowland/captr_ducktrack}
+}
+```
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) file for details.
